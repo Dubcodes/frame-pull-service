@@ -4,7 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -13,26 +13,34 @@ from sqlalchemy import func, select
 from . import __version__
 from .config import Settings, get_settings
 from .db import create_db_engine, init_db, make_session_factory
-from .models import Candidate, Interview, InterviewRevision, Job, JobStatus, Recording, ReviewEvent, ReviewStatus
+from .models import AppearanceGroup, Candidate, Interview, InterviewRevision, Job, JobStatus, Recording, ReviewEvent, ReviewStatus
 from .schemas import CaptureFrameRequest, RejectRequest, ReviewPatch, SelectCandidateRequest
 from .services.discovery import discover_recordings
 from .services.cleanup import cleanup_plan
 from .services.paths import artifact_path
-from .services.queue import queue_recording
+from .services.queue import cancel_queued, queue_recording, queue_selected
 from .services.review import approve, capture_frame, reject, save_review, select_candidate, refresh_manifest
 from .services.worker import Worker
+from .services.operations import get_value, seed_settings, settings_view, update_settings
+from .services.race_days import backfill_race_days, list_race_days, race_day_summary
+from .services.groups import group_view, list_groups, sync_groups
+from .services.source_lifecycle import deletion_eligibility
 
 
 class ServiceState:
     def __init__(self, settings: Settings, worker_enabled: bool):
         settings.ensure_data_dirs(); self.settings = settings; self.engine = create_db_engine(settings); init_db(self.engine)
-        self.sessions = make_session_factory(self.engine); self.worker = Worker(self.sessions, settings) if worker_enabled else None
+        self.sessions = make_session_factory(self.engine)
+        self.worker = Worker(self.sessions, settings) if worker_enabled else None
         self.watcher_task: asyncio.Task | None = None
 
 
 def serialize_recording(recording: Recording) -> dict:
     return {"id": recording.id, "filename": recording.filename, "size_bytes": recording.size_bytes,
-            "status": recording.status.value, "historical": recording.historical, "stable_at": recording.stable_at}
+            "status": recording.status.value, "historical": recording.historical, "stable_at": recording.stable_at,
+            "race_day_id": recording.race_day_id, "started_at": recording.recording_started_at,
+            "stopped_at": recording.recording_stopped_at, "duration_seconds": recording.duration_seconds,
+            "is_closed": recording.is_closed}
 
 
 def serialize_interview(session, interview: Interview) -> dict:
@@ -54,12 +62,18 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        with state.sessions() as session: discover_recordings(session, state.settings)
+        with state.sessions() as session:
+            seed_settings(session, state.settings); backfill_race_days(session); discover_recordings(session, state.settings)
         if state.worker: state.worker.start()
         async def watch() -> None:
             while True:
                 await asyncio.sleep(state.settings.discovery_interval_seconds)
-                with state.sessions() as session: discover_recordings(session, state.settings)
+                try:
+                    with state.sessions() as session: discover_recordings(session, state.settings)
+                except Exception:
+                    # Discovery is best-effort; a temporary filesystem error must
+                    # not take down review or queue operations.
+                    continue
         state.watcher_task = asyncio.create_task(watch())
         yield
         if state.watcher_task: state.watcher_task.cancel()
@@ -73,10 +87,13 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     @app.get("/api/health")
     def health() -> dict:
         with state.sessions() as session:
-            current = session.execute(select(Job).where(Job.status == JobStatus.PROCESSING)).scalar_one_or_none()
+            active = session.execute(select(Job).where(Job.status == JobStatus.PROCESSING)).scalars().all()
+            paused = bool(get_value(session, "processing_paused", False))
             return {"version": __version__, "database": "ok", "watcher_active": state.watcher_task is not None,
-                    "worker_active": bool(state.worker and state.worker.active), "current_job": current.id if current else None,
+                    "worker_active": bool(state.worker and state.worker.active), "processing_paused": paused,
+                    "current_job": active[0].id if active else None, "active_jobs": [{"id": item.id, "stage": item.progress_stage, "percent": item.progress_percent} for item in active],
                     "queue_depth": session.query(Job).filter(Job.status == JobStatus.QUEUED).count(),
+                    "max_concurrent_recordings": get_value(session, "max_concurrent_recordings", 1),
                     "ffmpeg_available": True, "ffprobe_available": True, "legacy_engine_available": state.settings.legacy_python.exists()}
 
     @app.get("/api/recordings")
@@ -105,6 +122,56 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     def reprocess(recording_id: int) -> dict:
         return queue(recording_id)
 
+    @app.post("/api/recordings/bulk-queue")
+    def bulk_queue(body: dict) -> dict:
+        with state.sessions() as session:
+            return queue_selected(session, [int(item) for item in body.get("recording_ids", [])], bool(body.get("reprocess", False)))
+
+    @app.post("/api/recordings/bulk-cancel")
+    def bulk_cancel(body: dict) -> dict:
+        with state.sessions() as session:
+            return cancel_queued(session, [int(item) for item in body.get("recording_ids", [])])
+
+    @app.get("/api/operations/settings")
+    def operation_settings() -> dict:
+        with state.sessions() as session: return settings_view(session)
+
+    @app.put("/api/operations/settings")
+    def save_operation_settings(body: dict) -> dict:
+        with state.sessions() as session:
+            try: return update_settings(session, body)
+            except ValueError as exc: raise HTTPException(422, str(exc))
+
+    @app.post("/api/operations/pause")
+    def pause_processing() -> dict:
+        with state.sessions() as session:
+            values = update_settings(session, {"processing_paused": True})
+            active = session.query(Job).filter(Job.status == JobStatus.PROCESSING).count()
+            return {"state": "pausing" if active else "paused", "active_jobs": active, "settings": values}
+
+    @app.post("/api/operations/resume")
+    def resume_processing() -> dict:
+        with state.sessions() as session: return {"state": "active", "settings": update_settings(session, {"processing_paused": False})}
+
+    @app.get("/api/race-days")
+    def race_days() -> list[dict]:
+        with state.sessions() as session: return list_race_days(session)
+
+    @app.get("/api/race-days/{race_day_id}")
+    def race_day(race_day_id: int) -> dict:
+        from .models import RaceDay
+        with state.sessions() as session:
+            item = session.get(RaceDay, race_day_id)
+            if not item: raise HTTPException(404, "race day not found")
+            return race_day_summary(session, item)
+
+    @app.get("/api/recordings/{recording_id}/deletion-eligibility")
+    def source_eligibility(recording_id: int) -> dict:
+        with state.sessions() as session:
+            item = session.get(Recording, recording_id)
+            if not item: raise HTTPException(404, "recording not found")
+            return deletion_eligibility(session, state.settings, item)
+
     @app.get("/api/interviews")
     def interviews(status: ReviewStatus | None = None, export_state: str | None = None) -> list[dict]:
         with state.sessions() as session:
@@ -112,6 +179,20 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             if status: query = query.where(Interview.review_status == status)
             if export_state: query = query.where(Interview.export_state == export_state)
             return [serialize_interview(session, item) for item in session.execute(query.order_by(Interview.id.desc())).scalars()]
+
+    @app.get("/api/appearance-groups")
+    def appearance_groups(race_day_id: int | None = None) -> list[dict]:
+        with state.sessions() as session: return list_groups(session, race_day_id)
+
+    @app.post("/api/appearance-groups/{group_id}/select-candidate")
+    def select_group_candidate(group_id: int, body: dict) -> dict:
+        with state.sessions() as session:
+            group = session.get(AppearanceGroup, group_id); candidate = session.get(Candidate, int(body.get("candidate_id", 0)))
+            if not group or not candidate: raise HTTPException(404, "group or candidate not found")
+            member_ids = {item.id for item in session.execute(select(Interview).where(Interview.appearance_group_id == group.id)).scalars()}
+            revision = session.get(InterviewRevision, candidate.revision_id)
+            if not revision or revision.interview_id not in member_ids: raise HTTPException(400, "candidate is not part of this group")
+            group.preferred_candidate_id = candidate.id; session.commit(); return group_view(session, group)
 
     def get_interview(session, interview_id: int) -> Interview:
         item = session.get(Interview, interview_id)
@@ -204,10 +285,65 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     def cleanup_dry_run() -> dict:
         return cleanup_plan(state.settings)
 
+    def require_bridge(authorization: str | None = Header(default=None)) -> None:
+        token = state.settings.bridge_token
+        if token and authorization != f"Bearer {token}":
+            raise HTTPException(401, "bridge authentication required")
+
+    @app.get("/api/bridge/v1/health", dependencies=[Depends(require_bridge)])
+    def bridge_health() -> dict:
+        return {"service": "frame-pull", "version": 1, "status": "ok"}
+
+    @app.get("/api/bridge/v1/race-days", dependencies=[Depends(require_bridge)])
+    def bridge_race_days() -> list[dict]:
+        with state.sessions() as session: return list_race_days(session)
+
+    @app.get("/api/bridge/v1/race-days/{race_day_id}", dependencies=[Depends(require_bridge)])
+    def bridge_race_day(race_day_id: int): return race_day(race_day_id)
+
+    @app.get("/api/bridge/v1/people", dependencies=[Depends(require_bridge)])
+    def bridge_people(race_day_id: int | None = None) -> list[dict]:
+        return appearance_groups(race_day_id)
+
+    @app.get("/api/bridge/v1/people/{group_id}", dependencies=[Depends(require_bridge)])
+    def bridge_person(group_id: int) -> dict:
+        with state.sessions() as session:
+            group = session.get(AppearanceGroup, group_id)
+            if not group: raise HTTPException(404, "group not found")
+            return group_view(session, group)
+
+    @app.get("/api/bridge/v1/interviews/{interview_id}", dependencies=[Depends(require_bridge)])
+    def bridge_interview(interview_id: int): return interview(interview_id)
+
+    @app.get("/api/bridge/v1/candidates/{candidate_id}/image", dependencies=[Depends(require_bridge)])
+    def bridge_candidate_image(candidate_id: int):
+        with state.sessions() as session:
+            candidate = session.get(Candidate, candidate_id)
+            if not candidate: raise HTTPException(404, "candidate not found")
+            revision = session.get(InterviewRevision, candidate.revision_id)
+            return media(revision.interview_id, "candidate", candidate.id)
+
+    @app.get("/api/bridge/v1/groups/{group_id}/portrait", dependencies=[Depends(require_bridge)])
+    def bridge_group_portrait(group_id: int):
+        with state.sessions() as session:
+            group = session.get(AppearanceGroup, group_id)
+            if not group or not group.preferred_candidate_id: raise HTTPException(404, "group portrait not found")
+            candidate = session.get(Candidate, group.preferred_candidate_id); revision = session.get(InterviewRevision, candidate.revision_id)
+            return media(revision.interview_id, "candidate", candidate.id)
+
+    @app.post("/api/bridge/v1/groups/{group_id}/mark-exported", dependencies=[Depends(require_bridge)])
+    def bridge_mark_exported(group_id: int) -> dict:
+        with state.sessions() as session:
+            group = session.get(AppearanceGroup, group_id)
+            if not group: raise HTTPException(404, "group not found")
+            group.export_state = "exported"; session.commit(); return {"export_state": "exported"}
+
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):
         with state.sessions() as session:
             return templates.TemplateResponse(request, "dashboard.html", {"recordings": session.query(Recording).count(), "pending": session.query(Interview).filter(Interview.review_status==ReviewStatus.PENDING).count(), "approved": session.query(Interview).filter(Interview.review_status==ReviewStatus.APPROVED).count()})
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings_page(request: Request): return templates.TemplateResponse(request, "settings.html", {})
     @app.get("/review", response_class=HTMLResponse)
     def review_queue(request: Request): return templates.TemplateResponse(request, "queue.html", {})
     @app.get("/review/{interview_id}", response_class=HTMLResponse)

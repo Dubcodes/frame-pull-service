@@ -1,5 +1,32 @@
 # Current State
 
+## Operational V2 checkpoint
+
+- V1 qualification commit: `14c2de1 Qualify Frame Pull Service V1`.
+- Before V2 migration, a SQLite-native backup was created at
+  `data/backups/frame_pull-20260927-092024.sqlite`.
+- V2 added additive SQLite schema support for Race Days, persistent operation
+  settings, recording sessions, calendar context, appearance groups, and
+  source-deletion audit records. Existing runtime data was preserved.
+- Current real state after migration: 93 recordings, 94 jobs (81 queued, 12
+  complete, 1 failed), 12 interviews (10 pending, 1 approved, 1 rejected),
+  and 54 candidates. Thirteen Race Days were derived from recording filenames.
+- The service is deliberately persisted as `processing_paused=true`. No worker
+  is running; opening the API cannot start the 81-job queue.
+- Defaults remain safety-first: autoqueue off, automatic race-day mode off,
+  source deletion off, review-before-delete on, export-before-delete on, and
+  one concurrent recording slot.
+- `/api/bridge/v1` is a versioned private API boundary. A configured
+  `FRAME_PULL_BRIDGE_TOKEN` requires bearer authentication. No People
+  Intelligence code, database, or filesystem was modified.
+- The recorder and calendar implementations are safe provider boundaries;
+  neither has been configured with a stream, credentials, or live calendar
+  network call.
+- Expanded isolated test suite: 64 passing tests before final V2 validation.
+- Frozen legacy output/work currently contain four pre-existing artifacts dated
+  24 September from an earlier direct detector run. V2 did not create, modify,
+  or remove them.
+
 ## V1 qualification
 
 - Standalone Frame Pull Service V1 with SQLite/WAL persistence, a first-run

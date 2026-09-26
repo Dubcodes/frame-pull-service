@@ -17,10 +17,11 @@ class Settings(BaseSettings):
     discovery_interval_seconds: int = 30
     stable_for_seconds: int = 120
     min_input_bytes: int = 10 * 1024 * 1024
-    auto_queue: bool = True
+    auto_queue: bool = False
     queue_existing_on_first_run: bool = False
     max_concurrent_jobs: int = 1
     clip_padding_seconds: float = 5.0
+    bridge_token: str = ""
     database_url: str | None = None
 
     @property
@@ -34,7 +35,7 @@ class Settings(BaseSettings):
         return self.legacy_engine_root / ".venv" / "Scripts" / "python.exe"
 
     def ensure_data_dirs(self) -> None:
-        for path in (self.data_dir, self.data_dir / "jobs", self.data_dir / "interviews", self.data_dir / "logs"):
+        for path in (self.data_dir, self.data_dir / "jobs", self.data_dir / "interviews", self.data_dir / "logs", self.data_dir / "backups"):
             path.mkdir(parents=True, exist_ok=True)
 
 

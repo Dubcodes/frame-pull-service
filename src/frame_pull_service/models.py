@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Enum, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -39,6 +39,78 @@ class ReviewStatus(str, enum.Enum):
     REJECTED = "rejected"
 
 
+class RaceDay(Base):
+    __tablename__ = "race_days"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    race_date: Mapped[date] = mapped_column(Date, unique=True, index=True)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class OperationalSetting(Base):
+    __tablename__ = "operational_settings"
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[object] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class RecordingSession(Base):
+    __tablename__ = "recording_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    race_day_id: Mapped[int | None] = mapped_column(ForeignKey("race_days.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="idle")
+    adapter_name: Mapped[str] = mapped_column(String(80), default="external")
+    active_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class CalendarMeeting(Base):
+    __tablename__ = "calendar_meetings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    race_day_id: Mapped[int] = mapped_column(ForeignKey("race_days.id"), index=True)
+    track: Mapped[str] = mapped_column(String(255))
+    source: Mapped[str] = mapped_column(String(120), default="manual")
+    source_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    refreshed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class CalendarRace(Base):
+    __tablename__ = "calendar_races"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    meeting_id: Mapped[int] = mapped_column(ForeignKey("calendar_meetings.id"), index=True)
+    race_number: Mapped[int] = mapped_column(Integer)
+    scheduled_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    context: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class AppearanceGroup(Base):
+    __tablename__ = "appearance_groups"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    race_day_id: Mapped[int] = mapped_column(ForeignKey("race_days.id"), index=True)
+    identity_key: Mapped[str] = mapped_column(String(255), index=True)
+    display_name: Mapped[str] = mapped_column(String(255))
+    preferred_candidate_id: Mapped[int | None] = mapped_column(ForeignKey("candidates.id"), nullable=True)
+    final_track: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    location_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    export_state: Mapped[str] = mapped_column(String(32), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("race_day_id", "identity_key"),)
+
+
+class SourceDeletionAudit(Base):
+    __tablename__ = "source_deletion_audits"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recording_id: Mapped[int] = mapped_column(ForeignKey("recordings.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(255))
+    checks: Mapped[dict] = mapped_column(JSON, default=dict)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Recording(Base):
     __tablename__ = "recordings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -51,6 +123,13 @@ class Recording(Base):
     stable_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[RecordingStatus] = mapped_column(Enum(RecordingStatus), default=RecordingStatus.DISCOVERED)
     historical: Mapped[bool] = mapped_column(Boolean, default=False)
+    race_day_id: Mapped[int | None] = mapped_column(ForeignKey("race_days.id"), nullable=True, index=True)
+    recording_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    recording_stopped_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metadata_probed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_closed: Mapped[bool] = mapped_column(Boolean, default=False)
+    recorder_session_id: Mapped[int | None] = mapped_column(ForeignKey("recording_sessions.id"), nullable=True)
     jobs: Mapped[list["Job"]] = relationship(back_populates="recording")
 
 
@@ -102,6 +181,8 @@ class Interview(Base):
     identity_source: Mapped[str] = mapped_column(String(32), default="unknown")
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    appearance_group_id: Mapped[int | None] = mapped_column(ForeignKey("appearance_groups.id"), nullable=True, index=True)
+    context_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class InterviewRevision(Base):

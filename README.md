@@ -53,3 +53,39 @@ included here.
 
 V1 does not automatically delete service artifacts. The legacy source corpus,
 its fixtures, and its configuration remain untouched.
+
+## Operational V2
+
+The dashboard is race-day first. Closed recordings are grouped by parsed
+broadcast date; expand a Race Day to inspect files, select visible or
+unprocessed recordings, queue selected files, or cancel jobs that have not
+started. Completed files remain complete and require an explicit reprocess
+request rather than being silently requeued.
+
+Operational settings are persisted in the service database at `/settings`.
+Automatic Race Day mode, closed-file autoqueue, source deletion, and calendar
+refresh are off by default. Processing pause is persistent: active jobs finish
+but no worker claims another queued job until resumed. Controlled worker slots
+support 1-4 independent jobs, each with its own legacy config and work folder.
+
+People is the default review mode. It groups only manually resolved or trusted
+identities within a Race Day; tentative OCR and unknowns remain individual
+interviews. A group retains the independent interview evidence and may select
+one preferred portrait. Candidate clicks select the image and seek the clip;
+double-click opens the full-size candidate viewer.
+
+Calendar and recorder integrations are provider boundaries. The included
+calendar cache can hold meeting/race context but never determines identity.
+The recorder adapter deliberately has no stream URL or credentials and stays
+disabled until a real recorder is configured. The source lifecycle is disabled
+by default and rechecks containment, stable/closed state, jobs, review/export,
+retention, and evidence artifacts immediately before any delete.
+
+## Bridge API
+
+`/api/bridge/v1` is the future private service-to-service boundary for People
+Intelligence. It exposes health, race days, groups, interviews and full-size
+candidate/portrait media without Windows paths. Set `FRAME_PULL_BRIDGE_TOKEN`
+outside source control to require `Authorization: Bearer <token>`. Use a LAN,
+Tailscale, or private reverse tunnel as transport; do not share databases or
+mount service storage between machines.

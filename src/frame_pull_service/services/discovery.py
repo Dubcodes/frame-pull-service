@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..models import Recording, RecordingStatus
+from .operations import get_value
+from .race_days import attach_recording_to_race_day
 
 
 def recording_fingerprint(path: Path, stat) -> str:
@@ -32,16 +34,18 @@ def discover_recordings(session: Session, settings: Settings, now: datetime | No
             continue
         fingerprint = recording_fingerprint(path, stat)
         record = session.execute(select(Recording).where(Recording.filename == path.name)).scalar_one_or_none()
-        stable = stat.st_size >= settings.min_input_bytes and (now.timestamp() - stat.st_mtime) >= settings.stable_for_seconds
+        stability_seconds = int(get_value(session, "file_stability_seconds", settings.stable_for_seconds))
+        stable = stat.st_size >= settings.min_input_bytes and (now.timestamp() - stat.st_mtime) >= stability_seconds
         if record is None:
             historical = not baseline_exists and not settings.queue_existing_on_first_run
             status = RecordingStatus.HISTORICAL if historical else (RecordingStatus.READY if stable else RecordingStatus.WAITING)
             record = Recording(filename=path.name, source_path=str(path.resolve()), fingerprint=fingerprint,
                                size_bytes=stat.st_size, mtime_epoch=stat.st_mtime, historical=historical,
-                               stable_at=now if stable else None, status=status)
+                               stable_at=now if stable else None, is_closed=stable, status=status)
             session.add(record)
+            session.flush(); attach_recording_to_race_day(session, record)
             created += 1
-            if status == RecordingStatus.READY and settings.auto_queue:
+            if status == RecordingStatus.READY and bool(get_value(session, "autoqueue_closed_recordings", settings.auto_queue)):
                 from .queue import queue_recording
                 queue_recording(session, record)
                 queued += 1
@@ -54,9 +58,10 @@ def discover_recordings(session: Session, settings: Settings, now: datetime | No
             updated += 1
         elif stable and record.status in (RecordingStatus.DISCOVERED, RecordingStatus.WAITING):
             record.stable_at = now
+            record.is_closed = True
             record.status = RecordingStatus.READY
             updated += 1
-            if settings.auto_queue and not record.historical:
+            if bool(get_value(session, "autoqueue_closed_recordings", settings.auto_queue)) and not record.historical:
                 from .queue import queue_recording
                 queue_recording(session, record)
                 queued += 1

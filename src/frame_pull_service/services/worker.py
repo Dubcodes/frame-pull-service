@@ -11,12 +11,14 @@ from ..models import Job, JobStatus, ProcessingRun, Recording, RecordingStatus
 from .legacy_engine import LegacySubprocessEngine
 from .normalizer import normalize_run
 from .queue import claim_next_job, recover_stale_jobs
+from .operations import get_value
 
 
 class Worker:
     def __init__(self, factory: sessionmaker[Session], settings: Settings):
         self.factory, self.settings = factory, settings
-        self.stop_event, self.thread = threading.Event(), None
+        self.stop_event, self.thread, self.jobs_lock = threading.Event(), None, threading.Lock()
+        self.job_threads: dict[int, threading.Thread] = {}
 
     @property
     def active(self) -> bool:
@@ -32,10 +34,17 @@ class Worker:
 
     def _loop(self) -> None:
         while not self.stop_event.wait(1):
+            with self.jobs_lock:
+                self.job_threads = {key: value for key, value in self.job_threads.items() if value.is_alive()}
             with self.factory() as session:
-                job = claim_next_job(session)
-                if job is None: continue
-                self._process(job.id)
+                slots = int(get_value(session, "max_concurrent_recordings", self.settings.max_concurrent_jobs))
+                job = claim_next_job(session, max_concurrent=slots)
+            if job is None:
+                continue
+            thread = threading.Thread(target=self._process, args=(job.id,), daemon=True, name=f"frame-pull-job-{job.id}")
+            with self.jobs_lock:
+                self.job_threads[job.id] = thread
+            thread.start()
 
     def _process(self, job_id: int) -> None:
         with self.factory() as session:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import Engine, event
+from sqlalchemy import Engine, event, inspect, text
 from sqlalchemy.engine import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -32,3 +32,20 @@ def init_db(engine: Engine) -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(engine)
+    # SQLite create_all intentionally does not alter existing tables. Keep the
+    # V2 additions additive so real operator data survives an in-place upgrade.
+    additions = {
+        "recordings": {
+            "race_day_id": "INTEGER", "recording_started_at": "DATETIME", "recording_stopped_at": "DATETIME",
+            "duration_seconds": "FLOAT", "metadata_probed_at": "DATETIME", "is_closed": "BOOLEAN DEFAULT 0",
+            "recorder_session_id": "INTEGER",
+        },
+        "interviews": {"appearance_group_id": "INTEGER", "context_confidence": "FLOAT"},
+    }
+    inspector = inspect(engine)
+    with engine.begin() as connection:
+        for table, columns in additions.items():
+            existing = {item["name"] for item in inspector.get_columns(table)}
+            for name, definition in columns.items():
+                if name not in existing:
+                    connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}"))
