@@ -36,6 +36,11 @@ seekable H.264 clip, poster, and preserved candidate portraits. OCR trust and
 tentative OCR remain distinct. Approval requires a selected portrait and a
 final name; rejected false positives remain auditable.
 
+When the frozen engine supplies shot-containment evidence, the review clip is
+bounded to the authenticated lower-third interval. This prevents the viewer or
+manual capture from drifting into unrelated footage before or after the
+interview; wider candidate evidence remains preserved separately.
+
 ## API
 
 `/api/health`, recording discovery/queue routes, interview review routes,

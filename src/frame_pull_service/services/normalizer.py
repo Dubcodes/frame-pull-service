@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from ..config import Settings
 from ..models import Candidate, Interview, InterviewRevision, ProcessingRun, Recording, ReviewEvent
 from .legacy_engine import LegacyResult
-from .media import clip_bounds, create_clip, extract_frame, ffprobe_duration
+from .manifests import write_manifest
+from .media import contained_clip_bounds, create_clip, extract_frame, ffprobe_duration
 from .paths import relative_artifact
 
 
@@ -72,15 +73,15 @@ def normalize_run(session: Session, settings: Settings, recording: Recording, pr
         index = int(segment["index"])
         start, end = float(segment.get("start", segment["detected_start"])), float(segment.get("end", segment["detected_end"]))
         key = interview_key(recording.filename, start, end)
+        clip_start, clip_end, clip_basis = contained_clip_bounds(segment, duration, settings.clip_padding_seconds)
         interview = session.execute(select(Interview).where(Interview.interview_key == key)).scalar_one_or_none()
         if interview is None:
-            interview = Interview(interview_key=key, recording_id=recording.id, source_start=start, source_end=end, bounds_basis="authenticated_segment")
+            interview = Interview(interview_key=key, recording_id=recording.id, source_start=start, source_end=end, bounds_basis=clip_basis)
             session.add(interview); session.flush()
         previous = session.execute(select(InterviewRevision).where(InterviewRevision.interview_id == interview.id).order_by(InterviewRevision.revision_number.desc())).scalars().first()
         revision_no = 1 if previous is None else previous.revision_number + 1
         package = settings.data_dir / "interviews" / key / f"revision_{revision_no:03d}"
         candidates_dir = package / "candidates"; candidates_dir.mkdir(parents=True, exist_ok=True)
-        clip_start, clip_end = clip_bounds(start, end, duration, settings.clip_padding_seconds)
         clip_path, poster_path, manifest_path = package / "clip.mp4", package / "poster.jpg", package / "manifest.json"
         create_clip("ffmpeg", source, clip_path, clip_start, clip_end)
         legacy_candidates = _legacy_candidates(result, index)
@@ -110,7 +111,7 @@ def normalize_run(session: Session, settings: Settings, recording: Recording, pr
                 interview.final_name, interview.identity_source = revision.trusted_name, "ocr_trusted"
         session.flush()
         revision.manifest = _manifest(interview, revision, mapped, recording, settings.data_dir)
-        manifest_path.write_text(json.dumps(revision.manifest, indent=2), encoding="utf-8")
+        write_manifest(manifest_path, revision.manifest)
         interviews.append(interview)
     processing_run.summary = result.summary
     return interviews

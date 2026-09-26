@@ -17,7 +17,9 @@ def recording_fingerprint(path: Path, stat) -> str:
 
 
 def discover_recordings(session: Session, settings: Settings, now: datetime | None = None) -> dict:
-    now = now or datetime.utcnow()
+    # Keep naive DB timestamps in the same local-time convention used by
+    # datetime.fromtimestamp/file mtimes on the Windows deployment.
+    now = now or datetime.now()
     source_dir = settings.source_dir.resolve()
     baseline_exists = session.execute(select(Recording.id).limit(1)).first() is not None
     created = updated = queued = 0

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from ..config import Settings
 from ..models import Candidate, Interview, InterviewRevision, Recording, ReviewEvent, ReviewStatus
 from .media import extract_frame
+from .manifests import write_manifest
 
 
 def refresh_manifest(session: Session, interview: Interview) -> None:
@@ -19,10 +20,13 @@ def refresh_manifest(session: Session, interview: Interview) -> None:
     manifest["role"] = {**manifest.get("role", {}), "final": interview.final_role}
     manifest["track"] = {**manifest.get("track", {}), "final": interview.final_track}
     manifest["review"] = {"status": interview.review_status.value, "export_state": interview.export_state}
+    manifest["source"] = {**manifest.get("source", {}), "bounds_basis": interview.bounds_basis}
+    manifest["clip"] = {**manifest.get("clip", {}), "start": revision.clip_start, "end": revision.clip_end,
+                        "duration": round(revision.clip_end - revision.clip_start, 3)}
     manifest["candidates"] = [{"id": c.id, "rank": c.rank, "source_timestamp": c.source_timestamp, "source": c.source,
                                 "selected": c.selected, "url": f"/api/interviews/{interview.id}/candidates/{c.id}"} for c in revision.candidates]
     revision.manifest = manifest
-    Path(revision.manifest_path).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    write_manifest(Path(revision.manifest_path), manifest)
 
 
 def active_revision(session: Session, interview: Interview) -> InterviewRevision:
@@ -59,7 +63,7 @@ def select_candidate(session: Session, interview: Interview, candidate: Candidat
 
 def capture_frame(session: Session, settings: Settings, interview: Interview, clip_time: float) -> Candidate:
     revision = active_revision(session, interview)
-    if clip_time > revision.clip_end - revision.clip_start + 0.25:
+    if clip_time < 0 or clip_time > revision.clip_end - revision.clip_start + 0.25:
         raise ValueError("clip timestamp is outside this evidence clip")
     source_time = revision.clip_start + clip_time
     source = Path(session.get(Recording, interview.recording_id).source_path)
