@@ -25,21 +25,25 @@ def claim_next_job(session: Session, max_concurrent: int = 1, paused: bool | Non
         paused = bool(get_value(session, "processing_paused", False))
     if paused:
         return None
-    active = session.scalar(select(func.count()).select_from(Job).where(Job.status == JobStatus.PROCESSING)) or 0
-    if active >= max(1, max_concurrent):
-        return None
-    job = session.execute(select(Job).where(Job.status == JobStatus.QUEUED).order_by(Job.queued_at, Job.id)).scalars().first()
-    if not job:
-        return None
-    now = datetime.utcnow()
-    claimed = session.execute(update(Job).where(Job.id == job.id, Job.status == JobStatus.QUEUED).values(
-        status=JobStatus.PROCESSING, started_at=now, heartbeat_at=now, attempt_count=Job.attempt_count + 1, progress_stage="starting"))
-    if not claimed.rowcount:
-        session.rollback()
-        return None
-    session.get(Recording, job.recording_id).status = RecordingStatus.PROCESSING
-    session.commit()
-    return session.get(Job, job.id)
+    # A competing worker can win the first queued row after our select. Retry
+    # the bounded CAS selection so an available second worker slot is useful.
+    for _attempt in range(3):
+        active = session.scalar(select(func.count()).select_from(Job).where(Job.status == JobStatus.PROCESSING)) or 0
+        if active >= max(1, max_concurrent):
+            return None
+        job = session.execute(select(Job).where(Job.status == JobStatus.QUEUED).order_by(Job.queued_at, Job.id)).scalars().first()
+        if not job:
+            return None
+        now = datetime.utcnow()
+        claimed = session.execute(update(Job).where(Job.id == job.id, Job.status == JobStatus.QUEUED).values(
+            status=JobStatus.PROCESSING, started_at=now, heartbeat_at=now, attempt_count=Job.attempt_count + 1, progress_stage="starting"))
+        if not claimed.rowcount:
+            session.rollback()
+            continue
+        session.get(Recording, job.recording_id).status = RecordingStatus.PROCESSING
+        session.commit()
+        return session.get(Job, job.id)
+    return None
 
 
 def queue_selected(session: Session, recording_ids: list[int], reprocess: bool = False) -> dict:

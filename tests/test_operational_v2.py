@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -49,6 +50,21 @@ class OperationalV2Tests(unittest.TestCase):
         third=self.record("trackside_20260921-0950_023.ts")
         with self.sessions() as session:
             queue_selected(session,[third]);self.assertIsNone(claim_next_job(session,max_concurrent=4,paused=True));self.assertEqual(session.get(Recording,third).status,RecordingStatus.QUEUED)
+
+    def test_simultaneous_separate_sessions_never_claim_the_same_job(self):
+        first=self.record(); second=self.record("trackside_20260921-0850_022.ts")
+        with self.sessions() as session: queue_selected(session,[first,second])
+        barrier=threading.Barrier(2); claimed=[]; errors=[]
+        def claim():
+            try:
+                with self.sessions() as session:
+                    barrier.wait(); job=claim_next_job(session,max_concurrent=2,paused=False)
+                    if job: claimed.append(job.id)
+            except Exception as exc: errors.append(exc)
+        workers=[threading.Thread(target=claim),threading.Thread(target=claim)]
+        for worker in workers: worker.start()
+        for worker in workers: worker.join()
+        self.assertFalse(errors); self.assertEqual(len(claimed),2); self.assertEqual(len(set(claimed)),2)
 
     def test_bulk_queue_is_idempotent_and_cancel_never_cancels_processing(self):
         queued=self.record();active=self.record("trackside_20260921-0850_022.ts")
