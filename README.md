@@ -44,10 +44,10 @@ interview; wider candidate evidence remains preserved separately.
 ## API
 
 `/api/health`, recording discovery/queue routes, interview review routes,
-media endpoints, approval/rejection, and export acknowledgement are available
-under `/api`. `GET /api/interviews?status=approved&export_state=pending` is the
-future People Intelligence handoff boundary. No People Intelligence client is
-included here.
+media endpoints, approval/rejection, export acknowledgement, and race-day
+calendar routes are available under `/api`. People Intelligence uses the
+separate authenticated `/api/bridge/v1` boundary; neither service shares a
+database or storage directory.
 
 ## Cleanup
 
@@ -74,12 +74,17 @@ interviews. A group retains the independent interview evidence and may select
 one preferred portrait. Candidate clicks select the image and seek the clip;
 double-click opens the full-size candidate viewer.
 
-Calendar and recorder integrations are provider boundaries. The included
-calendar cache can hold meeting/race context but never determines identity.
-The recorder adapter deliberately has no stream URL or credentials and stays
-disabled until a real recorder is configured. The source lifecycle is disabled
-by default and rechecks containment, stable/closed state, jobs, review/export,
-retention, and evidence artifacts immediately before any delete.
+The LoveRacing calendar provider discovers official meeting overview pages and
+normalizes only supported meeting/race timing context into the local cache.
+Calendar context can resolve a likely track/race with an explicit confidence
+label; it never establishes identity. Refresh is an explicit operator action
+until automatic mode is enabled. The recorder adapter deliberately has no
+stream URL or credentials and stays disabled until a real recorder is
+configured. Race-day planning derives a window from cached race times and
+configured lead/tail minutes; it reports an incomplete schedule rather than
+guessing. The source lifecycle is disabled by default and rechecks containment,
+stable/closed state, jobs, review/export, retention, and evidence artifacts
+immediately before any delete.
 
 ## Bridge API
 

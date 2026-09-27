@@ -1,11 +1,28 @@
 # Current State
 
+## V2.2 source/control checkpoint
+
+- Public source repository: `https://github.com/Dubcodes/frame-pull-service`
+  on `master`. The public source contains no runtime database, recordings,
+  artifacts, bridge token, or People Intelligence deployment configuration.
+- LoveRacing is now an independent, normalized calendar provider. It caches
+  official meeting/race timing and runner context, preserves cached data on a
+  provider outage, and labels any interview context as `high`, `medium`,
+  `low`, `conflict`, or `unknown` rather than inferring identity.
+- Race-day automation has a safety-first orchestration foundation: automatic
+  mode remains off, no recording starts without a configured recorder, active
+  `.ts` chunks never qualify for queueing, and planning reports an incomplete
+  schedule rather than inventing a window.
+- A real authenticated People-to-Frame-Pull staging qualification is required
+  before deployment. It must use disposable PostgreSQL rather than the local
+  production People database.
+
 ## Operational V2 checkpoint
 
 ## V2.1 bridge checkpoint
 
-- Private source repository: `https://github.com/Dubcodes/frame-pull-service`
-  on `master`. `FRAME_PULL_BRIDGE_TOKEN` remains optional for localhost
+- Historical V2.1 checkpoint: source repository visibility later changed to
+  public after a runtime/secret audit. `FRAME_PULL_BRIDGE_TOKEN` remains optional for localhost
   development and mandatory when configured.
 - Group exports now acknowledge each approved member interview and refresh its
   manifest, rather than only changing a group-level flag. Repeated acknowledgements
@@ -13,8 +30,9 @@
 - Bridge records expose stable IDs, review/export state, approved portrait
   availability, role and track context, and interview evidence summaries. They
   never expose source or artifact filesystem paths.
-- Calendar and recorder are still provider boundaries only. Neither has a live
-  source, credentials, automatic scheduler, or network calendar provider.
+- At this historical V2.1 checkpoint calendar and recorder were provider
+  boundaries only. V2.2 later added the independent LoveRacing calendar
+  provider; the recorder remains unconfigured.
 - People Intelligence now has a server-to-server Frame Pull Inbox client. It
   imports only after explicit existing-person selection, records provenance,
   commits locally, then acknowledges this bridge idempotently.
@@ -82,7 +100,9 @@
 
 - Legacy `config.yaml` SHA-256:
   `84BAE97469F307BA446A6DAF285509C35AF0F263440A3432CE222B1004B5BE56`.
-- Legacy `output` and `work` contain zero files.
+- Historical note: legacy `output` and `work` counts were later corrected to
+  four pre-existing artifacts dated 24 September. V2 did not create, modify,
+  or remove them.
 - The smoke source size and modification time remain unchanged.
 - Cleanup remains dry-run only; it never proposes source recordings, active
   revision media, manifests, or approved portraits for deletion.
@@ -100,5 +120,6 @@
 - Detector recall, precision, and OCR quality remain inherited from the frozen
   legacy engine.
 - PyTorch CUDA DLL 1114 remains a legacy-environment limitation.
-- No People Intelligence consumer is included. The next task is the explicit
-  API consumer integration; do not directly access its database or filesystem.
+- Historical note: V2.1 later introduced the explicit People Intelligence
+  consumer through the authenticated bridge; it does not access this service's
+  database or filesystem directly.

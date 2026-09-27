@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from . import __version__
 from .config import Settings, get_settings
 from .db import create_db_engine, init_db, make_session_factory
-from .models import AppearanceGroup, Candidate, Interview, InterviewRevision, Job, JobStatus, Recording, ReviewEvent, ReviewStatus
+from .models import AppearanceGroup, Candidate, Interview, InterviewRevision, Job, JobStatus, RaceDay, Recording, ReviewEvent, ReviewStatus
 from .schemas import CaptureFrameRequest, RejectRequest, ReviewPatch, SelectCandidateRequest
 from .services.discovery import discover_recordings
 from .services.cleanup import cleanup_plan
@@ -25,6 +25,9 @@ from .services.operations import get_value, seed_settings, settings_view, update
 from .services.race_days import backfill_race_days, list_race_days, race_day_summary
 from .services.groups import acknowledge_group_export, acknowledge_interview_export, group_view, list_groups, sync_groups
 from .services.source_lifecycle import deletion_eligibility
+from .services.calendar import LoveRacingCalendarProvider, refresh_race_day
+from .services.context import resolve_interview_context
+from .services.orchestrator import planned_recording_window
 
 
 class ServiceState:
@@ -53,7 +56,8 @@ def serialize_interview(session, interview: Interview) -> dict:
             "trusted_name": revision.trusted_name if revision else None, "ocr_name_candidate": revision.ocr_name_candidate if revision else None,
             "ocr_confidence": revision.ocr_confidence if revision else None, "name_trust_reason": revision.name_trust_reason if revision else None,
             "clip_duration": round(revision.clip_end - revision.clip_start, 3) if revision else 0,
-            "has_portrait": candidate is not None, "poster_url": f"/api/interviews/{interview.id}/poster" if revision else None}
+            "has_portrait": candidate is not None, "poster_url": f"/api/interviews/{interview.id}/poster" if revision else None,
+            "calendar_context": resolve_interview_context(session, interview)}
 
 
 def create_app(settings: Settings | None = None, worker_enabled: bool = False) -> FastAPI:
@@ -159,11 +163,24 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
 
     @app.get("/api/race-days/{race_day_id}")
     def race_day(race_day_id: int) -> dict:
-        from .models import RaceDay
         with state.sessions() as session:
             item = session.get(RaceDay, race_day_id)
             if not item: raise HTTPException(404, "race day not found")
             return race_day_summary(session, item)
+
+    @app.get("/api/race-days/{race_day_id}/calendar")
+    def race_day_calendar(race_day_id: int) -> dict:
+        with state.sessions() as session:
+            item = session.get(RaceDay, race_day_id)
+            if not item: raise HTTPException(404, "race day not found")
+            return {"race_day": race_day_summary(session, item), "recording_plan": planned_recording_window(session, item).__dict__}
+
+    @app.post("/api/race-days/{race_day_id}/calendar/refresh")
+    def refresh_calendar(race_day_id: int) -> dict:
+        with state.sessions() as session:
+            item = session.get(RaceDay, race_day_id)
+            if not item: raise HTTPException(404, "race day not found")
+            return refresh_race_day(session, item, LoveRacingCalendarProvider())
 
     @app.get("/api/recordings/{recording_id}/deletion-eligibility")
     def source_eligibility(recording_id: int) -> dict:

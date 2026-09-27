@@ -41,6 +41,7 @@ def init_db(engine: Engine) -> None:
             "recorder_session_id": "INTEGER",
         },
         "interviews": {"appearance_group_id": "INTEGER", "context_confidence": "FLOAT"},
+        "calendar_meetings": {"source_url": "TEXT", "last_attempted_at": "DATETIME", "provider_status": "VARCHAR(32) DEFAULT 'unknown'", "last_error": "TEXT"},
     }
     inspector = inspect(engine)
     with engine.begin() as connection:

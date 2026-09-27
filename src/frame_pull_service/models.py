@@ -71,8 +71,12 @@ class CalendarMeeting(Base):
     race_day_id: Mapped[int] = mapped_column(ForeignKey("race_days.id"), index=True)
     track: Mapped[str] = mapped_column(String(255))
     source: Mapped[str] = mapped_column(String(120), default="manual")
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     refreshed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    provider_status: Mapped[str] = mapped_column(String(32), default="unknown")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
