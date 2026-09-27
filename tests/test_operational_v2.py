@@ -75,7 +75,7 @@ class OperationalV2Tests(unittest.TestCase):
 
     def test_bridge_group_acknowledgement_updates_approved_evidence_idempotently(self):
         rid=self.record()
-        manifest=self.root/'evidence'/'manifest.json'; image=self.root/'evidence'/'portrait.jpg'; image.parent.mkdir(); image.write_bytes(b'portrait')
+        manifest=self.settings.data_dir/'evidence'/'manifest.json'; image=self.settings.data_dir/'evidence'/'portrait.jpg'; image.parent.mkdir(parents=True); image.write_bytes(b'portrait')
         with self.sessions() as session:
             run=ProcessingRun(recording_id=rid,run_key='bridge-run',job_dir='x',status='complete');session.add(run);session.flush()
             interview=Interview(interview_key='bridge-person',recording_id=rid,source_start=1,source_end=2,bounds_basis='test',final_name='Ryan Foote',final_role='Trainer',review_status=ReviewStatus.APPROVED);session.add(interview);session.flush()
@@ -84,6 +84,7 @@ class OperationalV2Tests(unittest.TestCase):
         app=create_app(self.settings)
         with TestClient(app) as client:
             self.assertEqual(client.get('/api/bridge/v1/interviews').status_code,200)
+            self.assertEqual(client.get(f'/api/bridge/v1/interviews/{interview.id}/portrait').status_code,200)
             first=client.post(f'/api/bridge/v1/groups/{group_id}/mark-exported');second=client.post(f'/api/bridge/v1/groups/{group_id}/mark-exported')
         self.assertEqual(first.status_code,200);self.assertEqual(second.status_code,200);self.assertEqual(first.json()['export_state'],'exported')
         with self.sessions() as session:

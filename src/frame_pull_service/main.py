@@ -327,6 +327,14 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     @app.get("/api/bridge/v1/interviews/{interview_id}", dependencies=[Depends(require_bridge)])
     def bridge_interview(interview_id: int): return interview(interview_id)
 
+    @app.get("/api/bridge/v1/interviews/{interview_id}/portrait", dependencies=[Depends(require_bridge)])
+    def bridge_interview_portrait(interview_id: int):
+        with state.sessions() as session:
+            item = get_interview(session, interview_id)
+            if item.review_status != ReviewStatus.APPROVED or not item.selected_candidate_id:
+                raise HTTPException(404, "approved interview portrait not found")
+            return media(interview_id, "portrait")
+
     @app.get("/api/bridge/v1/candidates/{candidate_id}/image", dependencies=[Depends(require_bridge)])
     def bridge_candidate_image(candidate_id: int):
         with state.sessions() as session:
