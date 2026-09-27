@@ -6,7 +6,8 @@ from collections import defaultdict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import AppearanceGroup, Candidate, Interview, InterviewRevision, Recording
+from ..models import AppearanceGroup, Candidate, Interview, InterviewRevision, Recording, ReviewEvent, ReviewStatus
+from .review import refresh_manifest
 
 
 def identity_key(name: str) -> str:
@@ -46,16 +47,22 @@ def group_view(session: Session, group: AppearanceGroup) -> dict:
         revision = session.get(InterviewRevision, item.active_revision_id) if item.active_revision_id else None
         if revision:
             candidates.extend(revision.candidates)
-    preferred = session.get(Candidate, group.preferred_candidate_id) if group.preferred_candidate_id else None
+    approved = [item for item in members if item.review_status == ReviewStatus.APPROVED and item.selected_candidate_id]
+    approved_candidate_ids = {item.selected_candidate_id for item in approved}
+    preferred = session.get(Candidate, group.preferred_candidate_id) if group.preferred_candidate_id in approved_candidate_ids else None
     if preferred is None:
-        preferred = next((item for item in candidates if item.selected), None) or (candidates[0] if candidates else None)
+        preferred = next((item for item in candidates if item.id in approved_candidate_ids), None)
     fallback_interview = members[0] if members else None
+    roles = sorted({item.final_role for item in members if item.final_role})
+    export_state = "exported" if approved and all(item.export_state == "exported" for item in approved) else "pending"
     return {"id": group.id, "race_day_id": group.race_day_id, "name": group.display_name, "interview_ids": [item.id for item in members],
             "interview_count": len(members), "candidate_count": len(candidates), "track": group.final_track,
             "location_confidence": group.location_confidence, "preferred_candidate_id": preferred.id if preferred else None,
             "portrait_url": f"/api/bridge/v1/groups/{group.id}/portrait" if preferred else None,
             "holding_url": f"/api/interviews/{fallback_interview.id}/candidates/{preferred.id}" if preferred else (f"/api/interviews/{fallback_interview.id}/poster" if fallback_interview else None),
-            "review_status": "approved" if any(item.review_status.value == "approved" for item in members) else "pending"}
+            "review_status": "approved" if approved else "pending", "export_state": export_state,
+            "roles": roles, "interviews": [{"id": item.id, "role": item.final_role, "track": item.final_track,
+            "source_start": item.source_start, "source_end": item.source_end} for item in members]}
 
 
 def list_groups(session: Session, race_day_id: int | None = None) -> list[dict]:
@@ -64,3 +71,30 @@ def list_groups(session: Session, race_day_id: int | None = None) -> list[dict]:
     if race_day_id:
         query = query.where(AppearanceGroup.race_day_id == race_day_id)
     return [group_view(session, group) for group in session.execute(query.order_by(AppearanceGroup.display_name)).scalars()]
+
+
+def acknowledge_group_export(session: Session, group: AppearanceGroup) -> dict:
+    """Mark only approved evidence as exported after a downstream commit succeeds."""
+    members = session.execute(select(Interview).where(Interview.appearance_group_id == group.id)).scalars().all()
+    approved = [item for item in members if item.review_status == ReviewStatus.APPROVED and item.selected_candidate_id]
+    if not approved:
+        raise ValueError("group has no approved portrait to export")
+    for item in approved:
+        if item.export_state != "exported":
+            item.export_state = "exported"
+            session.add(ReviewEvent(interview_id=item.id, event_type="export_acknowledged", payload={"scope": "appearance_group", "group_id": group.id}))
+            refresh_manifest(session, item)
+    group.export_state = "exported"
+    session.commit()
+    return group_view(session, group)
+
+
+def acknowledge_interview_export(session: Session, interview: Interview) -> dict:
+    if interview.review_status != ReviewStatus.APPROVED or not interview.selected_candidate_id:
+        raise ValueError("only approved interviews with a selected portrait can be exported")
+    if interview.export_state != "exported":
+        interview.export_state = "exported"
+        session.add(ReviewEvent(interview_id=interview.id, event_type="export_acknowledged", payload={"scope": "interview"}))
+        refresh_manifest(session, interview)
+        session.commit()
+    return {"id": interview.id, "export_state": interview.export_state}

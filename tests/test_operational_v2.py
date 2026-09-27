@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from frame_pull_service.config import Settings
 from frame_pull_service.db import create_db_engine, init_db, make_session_factory
 from frame_pull_service.main import create_app
-from frame_pull_service.models import Candidate, Interview, InterviewRevision, Job, JobStatus, ProcessingRun, RaceDay, Recording, RecordingStatus, ReviewStatus
+from frame_pull_service.models import Candidate, Interview, InterviewRevision, Job, JobStatus, ProcessingRun, RaceDay, Recording, RecordingStatus, ReviewEvent, ReviewStatus
 from frame_pull_service.services.groups import list_groups
 from frame_pull_service.services.operations import get_value, seed_settings, update_settings
 from frame_pull_service.services.queue import cancel_queued, claim_next_job, queue_selected
@@ -72,3 +72,19 @@ class OperationalV2Tests(unittest.TestCase):
         app=create_app(settings)
         with TestClient(app) as client:
             self.assertEqual(client.get('/api/bridge/v1/health').status_code,401);self.assertEqual(client.get('/api/bridge/v1/health',headers={'Authorization':'Bearer secret'}).status_code,200);self.assertNotIn(str(self.root),client.get('/api/bridge/v1/race-days',headers={'Authorization':'Bearer secret'}).text)
+
+    def test_bridge_group_acknowledgement_updates_approved_evidence_idempotently(self):
+        rid=self.record()
+        manifest=self.root/'evidence'/'manifest.json'; image=self.root/'evidence'/'portrait.jpg'; image.parent.mkdir(); image.write_bytes(b'portrait')
+        with self.sessions() as session:
+            run=ProcessingRun(recording_id=rid,run_key='bridge-run',job_dir='x',status='complete');session.add(run);session.flush()
+            interview=Interview(interview_key='bridge-person',recording_id=rid,source_start=1,source_end=2,bounds_basis='test',final_name='Ryan Foote',final_role='Trainer',review_status=ReviewStatus.APPROVED);session.add(interview);session.flush()
+            revision=InterviewRevision(interview_id=interview.id,processing_run_id=run.id,revision_number=1,clip_start=0,clip_end=1,clip_path='x',poster_path='x',manifest_path=str(manifest),manifest={});session.add(revision);session.flush()
+            candidate=Candidate(revision_id=revision.id,rank=1,source_timestamp=1,image_path=str(image),selected=True);session.add(candidate);session.flush();interview.active_revision_id=revision.id;interview.selected_candidate_id=candidate.id;session.commit();group_id=list_groups(session)[0]['id']
+        app=create_app(self.settings)
+        with TestClient(app) as client:
+            self.assertEqual(client.get('/api/bridge/v1/interviews').status_code,200)
+            first=client.post(f'/api/bridge/v1/groups/{group_id}/mark-exported');second=client.post(f'/api/bridge/v1/groups/{group_id}/mark-exported')
+        self.assertEqual(first.status_code,200);self.assertEqual(second.status_code,200);self.assertEqual(first.json()['export_state'],'exported')
+        with self.sessions() as session:
+            updated=session.get(Interview,interview.id);self.assertEqual(updated.export_state,'exported');self.assertEqual(session.query(ReviewEvent).filter(ReviewEvent.interview_id==interview.id,ReviewEvent.event_type=='export_acknowledged').count(),1);self.assertIn('exported',manifest.read_text())

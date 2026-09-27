@@ -23,7 +23,7 @@ from .services.review import approve, capture_frame, reject, save_review, select
 from .services.worker import Worker
 from .services.operations import get_value, seed_settings, settings_view, update_settings
 from .services.race_days import backfill_race_days, list_race_days, race_day_summary
-from .services.groups import group_view, list_groups, sync_groups
+from .services.groups import acknowledge_group_export, acknowledge_interview_export, group_view, list_groups, sync_groups
 from .services.source_lifecycle import deletion_eligibility
 
 
@@ -277,9 +277,8 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     @app.post("/api/interviews/{interview_id}/mark-exported")
     def mark_exported(interview_id: int) -> dict:
         with state.sessions() as session:
-            item=get_interview(session, interview_id)
-            if item.review_status != ReviewStatus.APPROVED: raise HTTPException(409, "only approved interviews can be exported")
-            item.export_state="exported"; session.add(ReviewEvent(interview_id=item.id, event_type="export_acknowledged", payload={})); refresh_manifest(session, item); session.commit(); return {"export_state": item.export_state}
+            try: return acknowledge_interview_export(session, get_interview(session, interview_id))
+            except ValueError as exc: raise HTTPException(409, str(exc))
 
     @app.get("/api/admin/cleanup-plan")
     def cleanup_dry_run() -> dict:
@@ -302,8 +301,12 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     def bridge_race_day(race_day_id: int): return race_day(race_day_id)
 
     @app.get("/api/bridge/v1/people", dependencies=[Depends(require_bridge)])
-    def bridge_people(race_day_id: int | None = None) -> list[dict]:
-        return appearance_groups(race_day_id)
+    def bridge_people(race_day_id: int | None = None, review_status: str | None = None, export_state: str | None = None) -> list[dict]:
+        with state.sessions() as session:
+            rows = list_groups(session, race_day_id)
+            if review_status: rows = [item for item in rows if item["review_status"] == review_status]
+            if export_state: rows = [item for item in rows if item["export_state"] == export_state]
+            return rows
 
     @app.get("/api/bridge/v1/people/{group_id}", dependencies=[Depends(require_bridge)])
     def bridge_person(group_id: int) -> dict:
@@ -311,6 +314,15 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             group = session.get(AppearanceGroup, group_id)
             if not group: raise HTTPException(404, "group not found")
             return group_view(session, group)
+
+    @app.get("/api/bridge/v1/interviews", dependencies=[Depends(require_bridge)])
+    def bridge_interviews(review_status: ReviewStatus | None = None, export_state: str | None = None, ungrouped_only: bool = False) -> list[dict]:
+        with state.sessions() as session:
+            query = select(Interview)
+            if review_status: query = query.where(Interview.review_status == review_status)
+            if export_state: query = query.where(Interview.export_state == export_state)
+            if ungrouped_only: query = query.where(Interview.appearance_group_id.is_(None))
+            return [serialize_interview(session, item) for item in session.execute(query.order_by(Interview.id.desc())).scalars()]
 
     @app.get("/api/bridge/v1/interviews/{interview_id}", dependencies=[Depends(require_bridge)])
     def bridge_interview(interview_id: int): return interview(interview_id)
@@ -327,8 +339,10 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     def bridge_group_portrait(group_id: int):
         with state.sessions() as session:
             group = session.get(AppearanceGroup, group_id)
-            if not group or not group.preferred_candidate_id: raise HTTPException(404, "group portrait not found")
-            candidate = session.get(Candidate, group.preferred_candidate_id); revision = session.get(InterviewRevision, candidate.revision_id)
+            if not group: raise HTTPException(404, "group portrait not found")
+            view = group_view(session, group)
+            if not view["preferred_candidate_id"]: raise HTTPException(404, "group portrait not found")
+            candidate = session.get(Candidate, view["preferred_candidate_id"]); revision = session.get(InterviewRevision, candidate.revision_id)
             return media(revision.interview_id, "candidate", candidate.id)
 
     @app.post("/api/bridge/v1/groups/{group_id}/mark-exported", dependencies=[Depends(require_bridge)])
@@ -336,7 +350,14 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
         with state.sessions() as session:
             group = session.get(AppearanceGroup, group_id)
             if not group: raise HTTPException(404, "group not found")
-            group.export_state = "exported"; session.commit(); return {"export_state": "exported"}
+            try: return acknowledge_group_export(session, group)
+            except ValueError as exc: raise HTTPException(409, str(exc))
+
+    @app.post("/api/bridge/v1/interviews/{interview_id}/mark-exported", dependencies=[Depends(require_bridge)])
+    def bridge_mark_interview_exported(interview_id: int) -> dict:
+        with state.sessions() as session:
+            try: return acknowledge_interview_export(session, get_interview(session, interview_id))
+            except ValueError as exc: raise HTTPException(409, str(exc))
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):

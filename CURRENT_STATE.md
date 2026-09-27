@@ -2,6 +2,19 @@
 
 ## Operational V2 checkpoint
 
+## V2.1 bridge checkpoint
+
+- Private bridge contract work is local at this checkpoint. `FRAME_PULL_BRIDGE_TOKEN`
+  remains optional for localhost development and mandatory when configured.
+- Group exports now acknowledge each approved member interview and refresh its
+  manifest, rather than only changing a group-level flag. Repeated acknowledgements
+  are idempotent. Approved, ungrouped interviews have the matching bridge route.
+- Bridge records expose stable IDs, review/export state, approved portrait
+  availability, role and track context, and interview evidence summaries. They
+  never expose source or artifact filesystem paths.
+- Calendar and recorder are still provider boundaries only. Neither has a live
+  source, credentials, automatic scheduler, or network calendar provider.
+
 - V1 qualification commit: `14c2de1 Qualify Frame Pull Service V1`.
 - Before V2 migration, a SQLite-native backup was created at
   `data/backups/frame_pull-20260927-092024.sqlite`.
