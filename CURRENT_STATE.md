@@ -4,8 +4,9 @@
 
 ## V2.1 bridge checkpoint
 
-- Private bridge contract work is local at this checkpoint. `FRAME_PULL_BRIDGE_TOKEN`
-  remains optional for localhost development and mandatory when configured.
+- Private source repository: `https://github.com/Dubcodes/frame-pull-service`
+  on `master`. `FRAME_PULL_BRIDGE_TOKEN` remains optional for localhost
+  development and mandatory when configured.
 - Group exports now acknowledge each approved member interview and refresh its
   manifest, rather than only changing a group-level flag. Repeated acknowledgements
   are idempotent. Approved, ungrouped interviews have the matching bridge route.
@@ -14,6 +15,9 @@
   never expose source or artifact filesystem paths.
 - Calendar and recorder are still provider boundaries only. Neither has a live
   source, credentials, automatic scheduler, or network calendar provider.
+- People Intelligence now has a server-to-server Frame Pull Inbox client. It
+  imports only after explicit existing-person selection, records provenance,
+  commits locally, then acknowledges this bridge idempotently.
 
 - V1 qualification commit: `14c2de1 Qualify Frame Pull Service V1`.
 - Before V2 migration, a SQLite-native backup was created at
