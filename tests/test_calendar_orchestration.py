@@ -52,6 +52,14 @@ class CalendarAndOrchestrationTests(unittest.TestCase):
         parsed = parse_meeting_html('<h1>Race Meeting for Example Club at Cambridge on 21 September 2026</h1><div>Race 3 Feature 2:30pm</div>', 'https://loveracing.nz/RaceInfo/1/Meeting-Overview.aspx')
         self.assertEqual(parsed.track, "Cambridge"); self.assertEqual(parsed.race_date, date(2026, 9, 21)); self.assertEqual(parsed.races[0].scheduled_time, datetime(2026, 9, 21, 14, 30))
 
+    def test_parse_meeting_preserves_labeled_runner_context_without_guessing_jdt(self):
+        html = '''<h1>Race Meeting for Example Club at Cambridge on 21 September 2026</h1><div>Race 3 Feature 2:30pm</div>
+        <table><tr><th>#</th><th>Horse</th><th>Jockey</th><th>Trainer</th></tr><tr><td>4</td><td>Clear Winner</td><td>A Rider</td><td>T Trainer</td></tr></table>'''
+        runner = parse_meeting_html(html, "https://example.test").races[0].runners[0]
+        self.assertEqual((runner.number, runner.horse, runner.jockey, runner.trainer), (4, "Clear Winner", "A Rider", "T Trainer"))
+        ambiguous = '''<h1>Race Meeting for Example Club at Cambridge on 21 September 2026</h1><div>Race 3 Feature 2:30pm</div><table><tr><th>#</th><th>Name</th><th>J/D/T</th></tr><tr><td>4</td><td>Clear Winner</td><td>A Rider</td></tr></table>'''
+        self.assertIsNone(parse_meeting_html(ambiguous, "https://example.test").races[0].runners[0].jockey)
+
     def test_plan_and_orchestrator_remain_disabled_or_unconfigured(self):
         with self.sessions() as session:
             day = session.get(RaceDay, self.day_id); self.assertEqual(planned_recording_window(session, day).state, "schedule_incomplete")

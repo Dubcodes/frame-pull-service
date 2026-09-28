@@ -65,6 +65,54 @@ def _text(html: str) -> str:
     parser = _TextExtractor(); parser.feed(html); return parser.text()
 
 
+class _RaceTableParser(HTMLParser):
+    """Associates each source table with its preceding race label."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.race_number: int | None = None; self.rows: list[tuple[int, list[str]]] = []
+        self._cells: list[str] | None = None; self._cell_parts: list[str] | None = None; self._in_cell = False
+    def handle_starttag(self, tag, _attrs):
+        if tag == "tr": self._cells = []
+        elif tag in {"td", "th"} and self._cells is not None:
+            self._cell_parts = []; self._in_cell = True
+    def handle_data(self, data):
+        value = " ".join(unescape(data).split())
+        if value:
+            found = re.search(r"\bRace\s+(\d{1,2})\b", value, re.I)
+            if found: self.race_number = int(found.group(1))
+            if self._in_cell and self._cell_parts is not None: self._cell_parts.append(value)
+    def handle_endtag(self, tag):
+        if tag in {"td", "th"} and self._in_cell:
+            self._cells.append(" ".join(self._cell_parts or [])); self._cell_parts = None; self._in_cell = False
+        elif tag == "tr" and self._cells is not None:
+            if self.race_number and self._cells: self.rows.append((self.race_number, self._cells))
+            self._cells = None
+
+
+def _table_runners(html: str) -> dict[int, list[CalendarRunner]]:
+    parser = _RaceTableParser(); parser.feed(html)
+    headers: dict[int, list[str]] = {}; runners: dict[int, list[CalendarRunner]] = {}
+    for race_number, cells in parser.rows:
+        lowered = [cell.casefold() for cell in cells]
+        if any(cell in {"#", "no", "number"} for cell in lowered) and any("name" in cell or "horse" in cell for cell in lowered):
+            headers[race_number] = lowered; continue
+        header = headers.get(race_number)
+        if not header or len(cells) < 2: continue
+        number_index = next((index for index, value in enumerate(header) if value in {"#", "no", "number"}), 0)
+        horse_index = next((index for index, value in enumerate(header) if "horse" in value or value == "name"), 1)
+        if number_index >= len(cells) or horse_index >= len(cells): continue
+        number_match = re.search(r"\d+", cells[number_index]); horse = cells[horse_index].strip()
+        if not number_match or not horse or horse.casefold() in {"name", "horse"}: continue
+        jockey_index = next((index for index, value in enumerate(header) if "jockey" in value), None)
+        trainer_index = next((index for index, value in enumerate(header) if "trainer" in value), None)
+        status_text = " ".join(cells).casefold()
+        runners.setdefault(race_number, []).append(CalendarRunner(number=int(number_match.group()), horse=horse,
+            jockey=cells[jockey_index].strip() if jockey_index is not None and jockey_index < len(cells) else None,
+            trainer=cells[trainer_index].strip() if trainer_index is not None and trainer_index < len(cells) else None,
+            scratched="scratched" in status_text or " scr" in status_text))
+    return runners
+
+
 def _parse_date(value: str) -> date | None:
     match = re.search(r"\b(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(20\d{2})\b", value)
     if not match: return None
@@ -102,10 +150,11 @@ def parse_meeting_html(html: str, source_url: str) -> CalendarMeetingPayload:
     text = _text(html); race_date = _parse_date(text); track = _track_from_text(text)
     if not track: raise CalendarProviderError("LoveRacing meeting did not expose a trustworthy track name")
     races: list[CalendarRacePayload] = []
+    runners = _table_runners(html)
     for match in re.finditer(r"\bRace\s+(\d{1,2})\b([^\n]{0,240})", text, re.I):
         number, detail = int(match.group(1)), match.group(2)
         name = re.sub(r"\b\d{1,2}:\d{2}\s*(?:[ap]m)?\b.*$", "", detail, flags=re.I).strip(" -:") or None
-        races.append(CalendarRacePayload(race_number=number, name=name, scheduled_time=_parse_time(detail, race_date), source_url=source_url))
+        races.append(CalendarRacePayload(race_number=number, name=name, scheduled_time=_parse_time(detail, race_date), source_url=source_url, runners=runners.get(number, [])))
     unique = {race.race_number: race for race in races}
     if not unique: raise CalendarProviderError("LoveRacing meeting did not expose any races")
     return CalendarMeetingPayload(track=track, source_url=source_url, race_date=race_date, races=[unique[key] for key in sorted(unique)])
