@@ -20,6 +20,12 @@ DEFAULTS = {
     "context_post_race_minutes": 30,
     "recording_lead_minutes": 50,
     "recording_tail_minutes": 30,
+    "recorder_enabled": False,
+    "recorder_chunk_minutes": 60,
+    "recorder_min_free_space_gb": 20,
+    "recorder_enabled": False,
+    "recorder_chunk_minutes": 60,
+    "recorder_min_free_space_gb": 20,
     "source_deletion_enabled": False,
     "source_retention_hours": 168,
     "require_review_complete_before_delete": True,
@@ -31,7 +37,10 @@ DEFAULTS = {
 def seed_settings(session: Session, settings: Settings) -> None:
     defaults = {**DEFAULTS, "autoqueue_closed_recordings": settings.auto_queue,
                 "file_stability_seconds": settings.stable_for_seconds,
-                "max_concurrent_recordings": settings.max_concurrent_jobs}
+                "max_concurrent_recordings": settings.max_concurrent_jobs,
+                "recorder_enabled": settings.recorder_enabled,
+                "recorder_chunk_minutes": settings.recorder_chunk_minutes,
+                "recorder_min_free_space_gb": settings.recorder_min_free_space_gb}
     for key, value in defaults.items():
         if session.get(OperationalSetting, key) is None:
             session.add(OperationalSetting(key=key, value=value))
@@ -56,6 +65,10 @@ def update_settings(session: Session, values: dict) -> dict:
             continue
         if key == "max_concurrent_recordings":
             value = min(4, max(1, int(value)))
+        if key == "recorder_chunk_minutes":
+            value = max(1.0, float(value))
+        if key == "recorder_min_free_space_gb":
+            value = max(0.0, float(value))
         if key == "default_review_view" and value not in {"people", "interviews"}:
             raise ValueError("default review view must be people or interviews")
         item = session.get(OperationalSetting, key)

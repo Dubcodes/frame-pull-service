@@ -116,6 +116,43 @@ path is excluded from discovery entirely until it closes; a closed chunk still
 needs its ordinary stability check before it becomes ready. Automatic race-day
 mode, autoqueue, processing, and source deletion all remain off by default.
 
+## Dedicated recorder (V2.4)
+
+`FFmpegRecorder` is the concrete recorder implementation behind the adapter.
+It starts one long-running FFmpeg segment process with an argument array (never
+`shell=True`), stream-copies where the configured input permits it, and writes
+normal source chunks using the compatible `trackside_YYYYMMDD-HHMM_SS.ts`
+format. The date/time in every filename belongs to that chunk's start, rather
+than the start of the overall session. Production defaults to 60-minute chunks.
+
+The actual Trackside input is **not configured in source control**. A future
+operator supplies `FRAME_PULL_RECORDER_INPUT` through a local secret
+environment. Status responses and logs retain only a redacted configuration
+indicator, not a URL, token, password, or query string. Recording additionally
+requires the persisted recorder-enabled setting, a manual start or enabled
+automatic plan, a usable FFmpeg executable, output storage, and sufficient free
+space. The output path belongs to configuration; browser requests cannot choose
+an arbitrary path or executable.
+
+Every recorder session persists its race-day/manual origin, planned end, PID,
+active chunk, stop request, log path, exit code, and error state. On an API
+restart the service never kills a remembered PID: an unproven live process is
+marked `uncertain`, while a missing PID is marked failed. FFmpeg crashes are
+recorded and do not auto-retry indefinitely.
+
+The current chunk is excluded from normal discovery while recording,
+finalizing, or gracefully stopping. After a roll or final stop, the closed
+chunk re-enters the ordinary source path: existence/readability/stability
+checks, then `READY`, then optional `QUEUED`. `autoqueue_closed_recordings`
+only controls queue insertion; `processing_paused` still blocks worker claims.
+Therefore recording can safely continue while processing is paused.
+
+The dashboard exposes a concise redacted recorder state and manual start,
+stop-after-current-chunk, and stop controls. The Race Day scheduler remains off
+by default. When enabled with a configured recorder and a valid calendar plan,
+it starts once at the plan window and requests a graceful stop at the planned
+end. No real recording starts merely by opening the service.
+
 ## Bridge API
 
 `/api/bridge/v1` is the future private service-to-service boundary for People

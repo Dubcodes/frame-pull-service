@@ -1,5 +1,25 @@
 # Current State
 
+## V2.4 dedicated recorder checkpoint
+
+- `FFmpegRecorder` is implemented as a configurable, secret-safe rolling
+  MPEG-TS recorder. It uses one FFmpeg segment process, parser-compatible
+  timestamped chunks, durable `RecordingSession` state, disk-space gating,
+  redacted logs/status, bounded stop behavior, and conservative PID recovery.
+- Current/finishing chunks are excluded from normal discovery. Only closed,
+  stable chunks become ordinary `Recording` rows and may be autoqueued. A
+  paused worker continues to block claims independently from recorder activity.
+- Synthetic local FFmpeg qualification stream-copied a temporary video/audio
+  input into three-second test segments, proved active-chunk exclusion, rolled
+  chunk readiness, final-stop handling, and FFprobe-readable transport stream
+  output. No `J:\frame-pull\trackside_recordings` input was used.
+- Manual/API and automatic Race Day orchestration controls are present, but
+  remain inactive by default. The actual Trackside stream/input has not been
+  configured, automatic race-day mode is off, autoqueue is off, processing is
+  paused, and source deletion is off.
+- **REAL TRACKSIDE INPUT NOT YET CONFIGURED.**
+- **REAL i5 PERFORMANCE BENCHMARK NOT YET RUN.**
+
 ## V2.3 race-day intelligence checkpoint
 
 - Broadcast wall-clock handling is explicit and timezone-aware with

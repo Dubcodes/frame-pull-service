@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     max_concurrent_jobs: int = 1
     clip_padding_seconds: float = 5.0
     broadcast_timezone: str = "Pacific/Auckland"
+    recorder_enabled: bool = False
+    recorder_input: str = ""
+    recorder_ffmpeg_path: str = "ffmpeg"
+    recorder_output_dir: Path | None = None
+    recorder_chunk_minutes: float = 60.0
+    recorder_extra_args: str = ""
+    recorder_min_free_space_gb: float = 20.0
     bridge_token: str = ""
     database_url: str | None = None
 
@@ -38,6 +45,10 @@ class Settings(BaseSettings):
     def ensure_data_dirs(self) -> None:
         for path in (self.data_dir, self.data_dir / "jobs", self.data_dir / "interviews", self.data_dir / "logs", self.data_dir / "backups"):
             path.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def resolved_recorder_output_dir(self) -> Path:
+        return (self.recorder_output_dir or self.source_dir).resolve()
 
 
 @lru_cache

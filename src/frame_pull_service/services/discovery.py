@@ -28,7 +28,7 @@ def discover_recordings(session: Session, settings: Settings, now: datetime | No
         for path in session.execute(
             select(RecordingSession.active_path).where(
                 RecordingSession.active_path.is_not(None),
-                RecordingSession.status.in_(("recording", "finalizing")),
+                RecordingSession.status.in_(("recording", "stopping", "finalizing")),
             )
         ).scalars()
         if path

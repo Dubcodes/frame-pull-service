@@ -63,6 +63,17 @@ class RecordingSession(Base):
     active_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    planned_start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    planned_end_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    manual: Mapped[bool] = mapped_column(Boolean, default=True)
+    ffmpeg_pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active_chunk_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active_chunk_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    stop_after_chunk: Mapped[bool] = mapped_column(Boolean, default=False)
+    error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    log_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recovery_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class CalendarMeeting(Base):

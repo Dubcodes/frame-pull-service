@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -27,7 +28,8 @@ from .services.groups import acknowledge_group_export, acknowledge_interview_exp
 from .services.source_lifecycle import deletion_eligibility
 from .services.calendar import LoveRacingCalendarProvider, refresh_race_day
 from .services.context import refresh_race_day_contexts, resolve_interview_context
-from .services.orchestrator import planned_recording_window
+from .services.orchestrator import RaceDayOrchestrator, planned_recording_window
+from .services.recorder import FFmpegRecorder
 
 
 class ServiceState:
@@ -35,6 +37,8 @@ class ServiceState:
         settings.ensure_data_dirs(); self.settings = settings; self.engine = create_db_engine(settings); init_db(self.engine)
         self.sessions = make_session_factory(self.engine)
         self.worker = Worker(self.sessions, settings) if worker_enabled else None
+        self.recorder = FFmpegRecorder(settings)
+        self.race_day_orchestrator = RaceDayOrchestrator(self.recorder)
         self.watcher_task: asyncio.Task | None = None
 
 
@@ -68,13 +72,18 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         with state.sessions() as session:
-            seed_settings(session, state.settings); backfill_race_days(session); discover_recordings(session, state.settings)
+            seed_settings(session, state.settings); backfill_race_days(session); state.recorder.recover(session); discover_recordings(session, state.settings)
         if state.worker: state.worker.start()
         async def watch() -> None:
             while True:
                 await asyncio.sleep(state.settings.discovery_interval_seconds)
                 try:
-                    with state.sessions() as session: discover_recordings(session, state.settings)
+                    with state.sessions() as session:
+                        state.recorder.refresh(session)
+                        today = datetime.now().date()
+                        for item in session.execute(select(RaceDay).where(RaceDay.race_date == today)).scalars():
+                            state.race_day_orchestrator.tick(session, item)
+                        discover_recordings(session, state.settings)
                 except Exception:
                     # Discovery is best-effort; a temporary filesystem error must
                     # not take down review or queue operations.
@@ -99,7 +108,30 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
                     "current_job": active[0].id if active else None, "active_jobs": [{"id": item.id, "stage": item.progress_stage, "percent": item.progress_percent} for item in active],
                     "queue_depth": session.query(Job).filter(Job.status == JobStatus.QUEUED).count(),
                     "max_concurrent_recordings": get_value(session, "max_concurrent_recordings", 1),
-                    "ffmpeg_available": True, "ffprobe_available": True, "legacy_engine_available": state.settings.legacy_python.exists()}
+                    "ffmpeg_available": True, "ffprobe_available": True, "legacy_engine_available": state.settings.legacy_python.exists(),
+                    "recorder": state.recorder.refresh(session).public()}
+
+    @app.get("/api/recorder/status")
+    def recorder_status() -> dict:
+        with state.sessions() as session:
+            return state.recorder.refresh(session).public()
+
+    @app.post("/api/recorder/start")
+    def start_recorder(body: dict | None = None) -> dict:
+        with state.sessions() as session:
+            race_day_id = int((body or {}).get("race_day_id", 0)) or None
+            race_day = session.get(RaceDay, race_day_id) if race_day_id else None
+            if race_day_id and not race_day: raise HTTPException(404, "race day not found")
+            try: return state.recorder.start(session, race_day, manual=True).public()
+            except RuntimeError as exc: raise HTTPException(409, str(exc))
+
+    @app.post("/api/recorder/stop-after-chunk")
+    def stop_recorder_after_chunk() -> dict:
+        with state.sessions() as session: return state.recorder.stop_after_current_chunk(session).public()
+
+    @app.post("/api/recorder/stop")
+    def stop_recorder(body: dict | None = None) -> dict:
+        with state.sessions() as session: return state.recorder.stop(session, hard=bool((body or {}).get("hard", False))).public()
 
     @app.get("/api/recordings")
     def recordings() -> list[dict]:

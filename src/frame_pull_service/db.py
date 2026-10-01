@@ -42,6 +42,12 @@ def init_db(engine: Engine) -> None:
         },
         "interviews": {"appearance_group_id": "INTEGER", "context_confidence": "FLOAT"},
         "calendar_meetings": {"source_url": "TEXT", "last_attempted_at": "DATETIME", "provider_status": "VARCHAR(32) DEFAULT 'unknown'", "last_error": "TEXT"},
+        "recording_sessions": {
+            "planned_start_at": "DATETIME", "planned_end_at": "DATETIME", "manual": "BOOLEAN DEFAULT 1",
+            "ffmpeg_pid": "INTEGER", "active_chunk_sequence": "INTEGER", "active_chunk_started_at": "DATETIME",
+            "stop_after_chunk": "BOOLEAN DEFAULT 0", "error_summary": "TEXT", "log_path": "TEXT",
+            "exit_code": "INTEGER", "recovery_checked_at": "DATETIME",
+        },
     }
     inspector = inspect(engine)
     with engine.begin() as connection:

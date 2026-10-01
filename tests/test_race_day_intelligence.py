@@ -80,6 +80,7 @@ class RaceDayIntelligenceTests(unittest.TestCase):
         spring = parse_recording_filename("trackside_20260921-1350_021.ts")
         autumn = parse_recording_filename("trackside_20260421-1350_021.ts")
         self.assertEqual(spring, datetime(2026, 9, 21, 13, 50, tzinfo=zone))
+        self.assertEqual(parse_recording_filename("trackside_20260921-1350_17.ts"), datetime(2026, 9, 21, 13, 50, 17, tzinfo=zone))
         self.assertEqual(spring.utcoffset(), timedelta(hours=12))
         self.assertEqual(autumn.utcoffset(), timedelta(hours=12))
         summer = parse_recording_filename("trackside_20261221-1350_021.ts")
