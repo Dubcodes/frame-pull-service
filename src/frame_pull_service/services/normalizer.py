@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 from PIL import Image
@@ -16,6 +17,7 @@ from .legacy_engine import LegacyResult
 from .manifests import write_manifest
 from .media import contained_clip_bounds, create_clip, extract_frame, ffprobe_duration
 from .paths import relative_artifact
+from .time_model import recording_end
 
 
 def interview_key(recording: str, start: float, end: float) -> str:
@@ -68,6 +70,12 @@ def _manifest(interview: Interview, revision: InterviewRevision, candidates: lis
 def normalize_run(session: Session, settings: Settings, recording: Recording, processing_run: ProcessingRun, result: LegacyResult) -> list[Interview]:
     source = Path(recording.source_path)
     duration = ffprobe_duration("ffprobe", source)
+    # FFprobe is already required by the single-recording normalization path.
+    # Persist this immutable result so dashboard reads never need to probe media.
+    recording.duration_seconds = duration
+    recording.metadata_probed_at = datetime.utcnow()
+    if recording.recording_started_at:
+        recording.recording_stopped_at = recording_end(recording.recording_started_at, duration).replace(tzinfo=None)
     interviews: list[Interview] = []
     for segment in result.segments.get("segments", []):
         index = int(segment["index"])

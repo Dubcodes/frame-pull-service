@@ -26,7 +26,7 @@ from .services.race_days import backfill_race_days, list_race_days, race_day_sum
 from .services.groups import acknowledge_group_export, acknowledge_interview_export, group_view, list_groups, sync_groups
 from .services.source_lifecycle import deletion_eligibility
 from .services.calendar import LoveRacingCalendarProvider, refresh_race_day
-from .services.context import resolve_interview_context
+from .services.context import refresh_race_day_contexts, resolve_interview_context
 from .services.orchestrator import planned_recording_window
 
 
@@ -38,15 +38,16 @@ class ServiceState:
         self.watcher_task: asyncio.Task | None = None
 
 
-def serialize_recording(recording: Recording) -> dict:
+def serialize_recording(recording: Recording, timezone: str = "Pacific/Auckland") -> dict:
+    from .services.time_model import iso_broadcast
     return {"id": recording.id, "filename": recording.filename, "size_bytes": recording.size_bytes,
             "status": recording.status.value, "historical": recording.historical, "stable_at": recording.stable_at,
-            "race_day_id": recording.race_day_id, "started_at": recording.recording_started_at,
-            "stopped_at": recording.recording_stopped_at, "duration_seconds": recording.duration_seconds,
+            "race_day_id": recording.race_day_id, "started_at": iso_broadcast(recording.recording_started_at, timezone),
+            "stopped_at": iso_broadcast(recording.recording_stopped_at, timezone), "duration_seconds": recording.duration_seconds,
             "is_closed": recording.is_closed}
 
 
-def serialize_interview(session, interview: Interview) -> dict:
+def serialize_interview(session, interview: Interview, timezone: str = "Pacific/Auckland") -> dict:
     revision = session.get(InterviewRevision, interview.active_revision_id) if interview.active_revision_id else None
     candidate = session.get(Candidate, interview.selected_candidate_id) if interview.selected_candidate_id else None
     return {"id": interview.id, "interview_id": interview.interview_key, "recording": session.get(Recording, interview.recording_id).filename,
@@ -57,7 +58,7 @@ def serialize_interview(session, interview: Interview) -> dict:
             "ocr_confidence": revision.ocr_confidence if revision else None, "name_trust_reason": revision.name_trust_reason if revision else None,
             "clip_duration": round(revision.clip_end - revision.clip_start, 3) if revision else 0,
             "has_portrait": candidate is not None, "poster_url": f"/api/interviews/{interview.id}/poster" if revision else None,
-            "calendar_context": resolve_interview_context(session, interview)}
+            "calendar_context": resolve_interview_context(session, interview, timezone)}
 
 
 def create_app(settings: Settings | None = None, worker_enabled: bool = False) -> FastAPI:
@@ -102,14 +103,14 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
 
     @app.get("/api/recordings")
     def recordings() -> list[dict]:
-        with state.sessions() as session: return [serialize_recording(item) for item in session.execute(select(Recording).order_by(Recording.id.desc())).scalars()]
+        with state.sessions() as session: return [serialize_recording(item, state.settings.broadcast_timezone) for item in session.execute(select(Recording).order_by(Recording.id.desc())).scalars()]
 
     @app.get("/api/recordings/{recording_id}")
     def recording(recording_id: int) -> dict:
         with state.sessions() as session:
             item = session.get(Recording, recording_id)
             if not item: raise HTTPException(404, "recording not found")
-            data = serialize_recording(item); data["jobs"] = [{"id": job.id, "status": job.status.value, "stage": job.progress_stage, "percent": job.progress_percent, "error": job.error_summary} for job in item.jobs]; return data
+            data = serialize_recording(item, state.settings.broadcast_timezone); data["jobs"] = [{"id": job.id, "status": job.status.value, "stage": job.progress_stage, "percent": job.progress_percent, "error": job.error_summary} for job in item.jobs]; return data
 
     @app.post("/api/recordings/discover")
     def discover() -> dict:
@@ -180,7 +181,9 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
         with state.sessions() as session:
             item = session.get(RaceDay, race_day_id)
             if not item: raise HTTPException(404, "race day not found")
-            return refresh_race_day(session, item, LoveRacingCalendarProvider())
+            result = refresh_race_day(session, item, LoveRacingCalendarProvider())
+            if result["ok"]: result["contexts_refreshed"] = refresh_race_day_contexts(session, item.id, state.settings.broadcast_timezone)
+            return result
 
     @app.get("/api/recordings/{recording_id}/deletion-eligibility")
     def source_eligibility(recording_id: int) -> dict:
@@ -195,7 +198,7 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             query = select(Interview)
             if status: query = query.where(Interview.review_status == status)
             if export_state: query = query.where(Interview.export_state == export_state)
-            return [serialize_interview(session, item) for item in session.execute(query.order_by(Interview.id.desc())).scalars()]
+            return [serialize_interview(session, item, state.settings.broadcast_timezone) for item in session.execute(query.order_by(Interview.id.desc())).scalars()]
 
     @app.get("/api/appearance-groups")
     def appearance_groups(race_day_id: int | None = None) -> list[dict]:
@@ -218,7 +221,7 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
 
     @app.get("/api/interviews/{interview_id}")
     def interview(interview_id: int) -> dict:
-        with state.sessions() as session: return serialize_interview(session, get_interview(session, interview_id))
+        with state.sessions() as session: return serialize_interview(session, get_interview(session, interview_id), state.settings.broadcast_timezone)
 
     @app.get("/api/interviews/{interview_id}/manifest")
     def manifest(interview_id: int) -> dict:
@@ -339,7 +342,7 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             if review_status: query = query.where(Interview.review_status == review_status)
             if export_state: query = query.where(Interview.export_state == export_state)
             if ungrouped_only: query = query.where(Interview.appearance_group_id.is_(None))
-            return [serialize_interview(session, item) for item in session.execute(query.order_by(Interview.id.desc())).scalars()]
+            return [serialize_interview(session, item, state.settings.broadcast_timezone) for item in session.execute(query.order_by(Interview.id.desc())).scalars()]
 
     @app.get("/api/bridge/v1/interviews/{interview_id}", dependencies=[Depends(require_bridge)])
     def bridge_interview(interview_id: int): return interview(interview_id)

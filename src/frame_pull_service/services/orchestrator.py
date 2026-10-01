@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..models import CalendarMeeting, CalendarRace, RaceDay, RecordingSession
 from .operations import get_value
 from .recorder import RecorderAdapter
+from .time_model import in_broadcast_timezone
 
 
 @dataclass(frozen=True)
@@ -22,7 +23,14 @@ class RecordingPlan:
 
 
 def planned_recording_window(session: Session, race_day: RaceDay) -> RecordingPlan:
-    times = session.execute(select(CalendarRace.scheduled_time).join(CalendarMeeting).where(CalendarMeeting.race_day_id == race_day.id, CalendarRace.scheduled_time.is_not(None))).scalars().all()
+    times = [
+        in_broadcast_timezone(value)
+        for value in session.execute(
+            select(CalendarRace.scheduled_time)
+            .join(CalendarMeeting)
+            .where(CalendarMeeting.race_day_id == race_day.id, CalendarRace.scheduled_time.is_not(None))
+        ).scalars().all()
+    ]
     if not times: return RecordingPlan("schedule_incomplete", reason="Race times are unavailable; no fallback window is configured.")
     lead = int(get_value(session, "recording_lead_minutes", 50)); tail = int(get_value(session, "recording_tail_minutes", 30))
     return RecordingPlan("planned", min(times) - timedelta(minutes=lead), max(times) + timedelta(minutes=tail), f"First race {min(times):%H:%M}; last race {max(times):%H:%M}; lead {lead}m; tail {tail}m.")

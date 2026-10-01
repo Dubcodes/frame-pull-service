@@ -16,6 +16,8 @@ DEFAULTS = {
     "calendar_refresh_minutes": 60,
     "calendar_future_refresh_hours": 24,
     "calendar_day_before_refresh_minutes": 180,
+    "context_pre_race_minutes": 20,
+    "context_post_race_minutes": 30,
     "recording_lead_minutes": 50,
     "recording_tail_minutes": 30,
     "source_deletion_enabled": False,

@@ -189,6 +189,21 @@ class Interview(Base):
     context_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
+class InterviewContext(Base):
+    __tablename__ = "interview_contexts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    interview_id: Mapped[int] = mapped_column(ForeignKey("interviews.id"), unique=True, index=True)
+    resolver_version: Mapped[str] = mapped_column(String(32), default="v2.3")
+    timezone: Mapped[str] = mapped_column(String(80), default="Pacific/Auckland")
+    interview_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    meeting_id: Mapped[int | None] = mapped_column(ForeignKey("calendar_meetings.id"), nullable=True)
+    race_id: Mapped[int | None] = mapped_column(ForeignKey("calendar_races.id"), nullable=True)
+    resolved_track: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    confidence: Mapped[str] = mapped_column(String(32), default="unknown")
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    resolved_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class InterviewRevision(Base):
     __tablename__ = "interview_revisions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

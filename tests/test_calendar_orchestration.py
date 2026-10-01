@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from frame_pull_service.config import Settings
 from frame_pull_service.db import create_db_engine, init_db, make_session_factory
@@ -50,7 +51,7 @@ class CalendarAndOrchestrationTests(unittest.TestCase):
 
     def test_parse_meeting_rejects_untrusted_track_and_normalizes_date(self):
         parsed = parse_meeting_html('<h1>Race Meeting for Example Club at Cambridge on 21 September 2026</h1><div>Race 3 Feature 2:30pm</div>', 'https://loveracing.nz/RaceInfo/1/Meeting-Overview.aspx')
-        self.assertEqual(parsed.track, "Cambridge"); self.assertEqual(parsed.race_date, date(2026, 9, 21)); self.assertEqual(parsed.races[0].scheduled_time, datetime(2026, 9, 21, 14, 30))
+        self.assertEqual(parsed.track, "Cambridge"); self.assertEqual(parsed.race_date, date(2026, 9, 21)); self.assertEqual(parsed.races[0].scheduled_time, datetime(2026, 9, 21, 14, 30, tzinfo=ZoneInfo("Pacific/Auckland")))
 
     def test_parse_meeting_preserves_labeled_runner_context_without_guessing_jdt(self):
         html = '''<h1>Race Meeting for Example Club at Cambridge on 21 September 2026</h1><div>Race 3 Feature 2:30pm</div>
@@ -65,7 +66,7 @@ class CalendarAndOrchestrationTests(unittest.TestCase):
             day = session.get(RaceDay, self.day_id); self.assertEqual(planned_recording_window(session, day).state, "schedule_incomplete")
             self.assertEqual(RaceDayOrchestrator(RecorderAdapter()).tick(session, day)["state"], "disabled")
             session.add(CalendarMeeting(race_day_id=day.id, track="Riccarton")); session.flush(); meeting = session.query(CalendarMeeting).one(); session.add(CalendarRace(meeting_id=meeting.id, race_number=1, scheduled_time=datetime(2026, 9, 21, 12, 20))); session.commit()
-            plan = planned_recording_window(session, day); self.assertEqual(plan.start, datetime(2026, 9, 21, 11, 30)); self.assertEqual(plan.end, datetime(2026, 9, 21, 12, 50))
+            plan = planned_recording_window(session, day); self.assertEqual(plan.start, datetime(2026, 9, 21, 11, 30, tzinfo=ZoneInfo("Pacific/Auckland"))); self.assertEqual(plan.end, datetime(2026, 9, 21, 12, 50, tzinfo=ZoneInfo("Pacific/Auckland")))
             update_settings(session, {"automatic_race_day_mode": True}); self.assertEqual(RaceDayOrchestrator(RecorderAdapter()).tick(session, day)["state"], "recorder_unconfigured")
 
     def test_active_chunk_never_qualifies_and_closed_chunk_requires_stability(self):

@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import CalendarMeeting, CalendarRace, RaceDay
+from .time_model import broadcast_zone
 
 LOVERACING_BASE_URL = "https://loveracing.nz/"
 LOVERACING_CALENDAR_URL = "https://loveracing.nz/RaceInfo.aspx"
@@ -121,13 +122,13 @@ def _parse_date(value: str) -> date | None:
     return date(int(match.group(3)), month, int(match.group(1))) if month else None
 
 
-def _parse_time(value: str, race_date: date | None) -> datetime | None:
+def _parse_time(value: str, race_date: date | None, timezone: str = "Pacific/Auckland") -> datetime | None:
     match = re.search(r"\b(\d{1,2}):(\d{2})\s*([ap]m)?\b", value, re.I)
     if not match or race_date is None: return None
     hour, minute, suffix = int(match.group(1)), int(match.group(2)), (match.group(3) or "").lower()
     if suffix == "pm" and hour < 12: hour += 12
     if suffix == "am" and hour == 12: hour = 0
-    return datetime.combine(race_date, time(hour, minute))
+    return datetime.combine(race_date, time(hour, minute), tzinfo=broadcast_zone(timezone))
 
 
 def _track_from_text(text: str) -> str | None:

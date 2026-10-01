@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..models import AppearanceGroup, Candidate, Interview, InterviewRevision, Recording, ReviewEvent, ReviewStatus
 from .review import refresh_manifest
+from .context import resolve_interview_context
 
 
 def identity_key(name: str) -> str:
@@ -54,15 +55,26 @@ def group_view(session: Session, group: AppearanceGroup) -> dict:
         preferred = next((item for item in candidates if item.id in approved_candidate_ids), None)
     fallback_interview = members[0] if members else None
     roles = sorted({item.final_role for item in members if item.final_role})
+    member_contexts = [resolve_interview_context(session, item) for item in members]
+    strong_tracks = {context["resolved_track"] for context in member_contexts if context.get("resolved_track") and context.get("confidence") in {"high", "medium"}}
+    human_tracks = {item.final_track for item in members if item.final_track}
+    candidate_tracks = human_tracks or strong_tracks
+    if len(candidate_tracks) > 1:
+        location, location_state = None, "conflict"
+    elif candidate_tracks:
+        location, location_state = next(iter(candidate_tracks)), "resolved"
+    else:
+        location, location_state = None, "unknown"
     export_state = "exported" if approved and all(item.export_state == "exported" for item in approved) else "pending"
     return {"id": group.id, "race_day_id": group.race_day_id, "name": group.display_name, "interview_ids": [item.id for item in members],
-            "interview_count": len(members), "candidate_count": len(candidates), "track": group.final_track,
-            "location_confidence": group.location_confidence, "preferred_candidate_id": preferred.id if preferred else None,
+            "interview_count": len(members), "candidate_count": len(candidates), "track": location,
+            "location_state": location_state, "location_confidence": group.location_confidence, "preferred_candidate_id": preferred.id if preferred else None,
             "portrait_url": f"/api/bridge/v1/groups/{group.id}/portrait" if preferred else None,
             "holding_url": f"/api/interviews/{fallback_interview.id}/candidates/{preferred.id}" if preferred else (f"/api/interviews/{fallback_interview.id}/poster" if fallback_interview else None),
             "review_status": "approved" if approved else "pending", "export_state": export_state,
             "roles": roles, "interviews": [{"id": item.id, "role": item.final_role, "track": item.final_track,
-            "source_start": item.source_start, "source_end": item.source_end} for item in members]}
+            "source_start": item.source_start, "source_end": item.source_end, "calendar_context": context}
+            for item, context in zip(members, member_contexts)]}
 
 
 def list_groups(session: Session, race_day_id: int | None = None) -> list[dict]:

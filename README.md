@@ -86,6 +86,36 @@ guessing. The source lifecycle is disabled by default and rechecks containment,
 stable/closed state, jobs, review/export, retention, and evidence artifacts
 immediately before any delete.
 
+## Race-day intelligence (V2.3)
+
+Broadcast time is explicit: `Pacific/Auckland` is the configurable default.
+Trackside filenames supply a timezone-aware recording start when they match the
+known naming convention, and an interview's source timestamp is added to that
+start in the service layer. FFprobe duration is cached only when a recording is
+already being normalized, allowing the stored recording end to be shown without
+probing media during dashboard reads.
+
+The conservative `InterviewContextResolver` associates an interview with
+cached calendar evidence using configured pre-race and post-race windows. It
+returns `high`, `medium`, `low`, `conflict`, or `unknown`, retains nearby races,
+and stores refreshable evidence in `InterviewContext`. Calendar runners,
+scratches, and explicitly labelled jockey/trainer fields remain contextual
+evidence only: they never establish an interview subject's identity. Human
+track values are not overwritten.
+
+Race Day cards show actual cached meetings, race counts, first/last times,
+recording ranges, and a lead/tail recording plan. The detail view leads with
+human-readable interview context and keeps technical provenance available
+below it. Grouped people display one resolved track only when member evidence
+agrees; otherwise the UI reports a location conflict. Unknown interviews remain
+separate and retain their own context.
+
+The recorder remains unconfigured. `RecorderAdapter` is only a future contract
+for status, start, stop, current output, and health. A recorder's active `.ts`
+path is excluded from discovery entirely until it closes; a closed chunk still
+needs its ordinary stability check before it becomes ready. Automatic race-day
+mode, autoqueue, processing, and source deletion all remain off by default.
+
 ## Bridge API
 
 `/api/bridge/v1` is the future private service-to-service boundary for People

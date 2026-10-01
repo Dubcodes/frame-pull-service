@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..models import Recording, RecordingStatus
+from ..models import Recording, RecordingSession, RecordingStatus
 from .operations import get_value
 from .race_days import attach_recording_to_race_day
 
@@ -23,9 +23,23 @@ def discover_recordings(session: Session, settings: Settings, now: datetime | No
     # datetime.fromtimestamp/file mtimes on the Windows deployment.
     now = now or datetime.now()
     source_dir = settings.source_dir.resolve()
+    active_paths = {
+        Path(path).resolve()
+        for path in session.execute(
+            select(RecordingSession.active_path).where(
+                RecordingSession.active_path.is_not(None),
+                RecordingSession.status.in_(("recording", "finalizing")),
+            )
+        ).scalars()
+        if path
+    }
     baseline_exists = session.execute(select(Recording.id).limit(1)).first() is not None
     created = updated = queued = 0
     for path in sorted(source_dir.glob("*.ts")):
+        # An adapter's active output is never a candidate for stability or queueing.
+        # It is intentionally absent from discovery until the recorder closes it.
+        if path.resolve() in active_paths:
+            continue
         try:
             stat = path.stat()
             readable = path.open("rb")

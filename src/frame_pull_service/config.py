@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     queue_existing_on_first_run: bool = False
     max_concurrent_jobs: int = 1
     clip_padding_seconds: float = 5.0
+    broadcast_timezone: str = "Pacific/Auckland"
     bridge_token: str = ""
     database_url: str | None = None
 

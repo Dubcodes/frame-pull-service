@@ -1,5 +1,28 @@
 # Current State
 
+## V2.3 race-day intelligence checkpoint
+
+- Broadcast wall-clock handling is explicit and timezone-aware with
+  `Pacific/Auckland` as the configured default. Filename starts,
+  FFprobe-derived recording ends, and interview source offsets are handled in
+  the service layer rather than as UI arithmetic.
+- `InterviewContext` persists refreshable resolver evidence: the applicable
+  meeting/race, nearby races, runners, confidence label, resolver version, and
+  local interview time. Calendar context never becomes identity proof and it
+  never overwrites a human track correction.
+- The Race Day and review UI expose calendar status, recording plans, readable
+  interview/race context, unknown-person context, and grouped location
+  conflicts while retaining technical evidence separately.
+- Active recorder outputs are excluded from discovery before they can become
+  ready or queued. Closed chunks still require normal stability evidence.
+- A bounded `J:\projects` source/docs/manifests search found no reusable
+  Trackside recording implementation. The adapter remains unconfigured; no
+  stream URL, credentials, recorder, processing, or source deletion was added.
+- V2.3 isolated verification has 79 passing Frame Pull tests. Native
+  PostgreSQL staging is blocked: Docker is unavailable by requirement, no safe
+  non-production native/remote PostgreSQL endpoint is configured, and the
+  People production database was not used.
+
 ## V2.2 source/control checkpoint
 
 - Public source repository: `https://github.com/Dubcodes/frame-pull-service`

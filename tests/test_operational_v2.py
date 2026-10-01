@@ -5,6 +5,7 @@ import threading
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
@@ -40,7 +41,10 @@ class OperationalV2Tests(unittest.TestCase):
         with self.sessions() as session: self.assertTrue(get_value(session,"processing_paused"));self.assertEqual(get_value(session,"max_concurrent_recordings"),4)
 
     def test_filename_parser_and_race_day_attachment(self):
-        self.assertEqual(parse_recording_filename("trackside_20260921-0750_021.ts"),datetime(2026,9,21,7,50));self.assertIsNone(parse_recording_filename("other.ts"));rid=self.record()
+        self.assertEqual(
+            parse_recording_filename("trackside_20260921-0750_021.ts"),
+            datetime(2026, 9, 21, 7, 50, tzinfo=ZoneInfo("Pacific/Auckland")),
+        );self.assertIsNone(parse_recording_filename("other.ts"));rid=self.record()
         with self.sessions() as session: self.assertEqual(session.get(Recording,rid).race_day_id,session.query(RaceDay).one().id)
 
     def test_pause_and_concurrency_claim_distinct_jobs(self):
