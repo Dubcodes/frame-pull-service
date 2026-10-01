@@ -142,7 +142,7 @@ class QualificationCase(unittest.TestCase):
     def test_api_health_routes_and_errors(self):
         _,iid,_,cid=self.session_fixture();app=create_app(self.settings)
         with TestClient(app) as client:
-            self.assertEqual(client.get('/api/health').status_code,200);self.assertEqual(client.get('/').status_code,200);self.assertIn('Frame Pull Service',client.get('/').text);self.assertEqual(client.get('/review').status_code,200);self.assertIn('Use this frame',client.get(f'/review/{iid}').text)
+            self.assertEqual(client.get('/api/health').status_code,200);self.assertEqual(client.get('/').status_code,200);self.assertIn('Frame Pull Service',client.get('/').text);self.assertEqual(client.get('/review').status_code,200);detail=client.get(f'/review/{iid}').text;self.assertIn('Use this frame',detail);self.assertIn('Interview context',detail)
             self.assertEqual(client.get('/api/interviews/9999').status_code,404);self.assertEqual(client.get('/api/interviews/9999/clip').status_code,404);self.assertEqual(client.post('/api/interviews/9999/approve').status_code,404);self.assertEqual(client.post(f'/api/interviews/{iid}/select-candidate',json={'candidate_id':9999}).status_code,404)
 
     def test_media_helpers_with_synthetic_audio_and_silent_video(self):
