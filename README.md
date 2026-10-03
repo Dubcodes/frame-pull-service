@@ -153,6 +153,20 @@ by default. When enabled with a configured recorder and a valid calendar plan,
 it starts once at the plan window and requests a graceful stop at the planned
 end. No real recording starts merely by opening the service.
 
+### Trackside HLS profile
+
+Set `FRAME_PULL_RECORDER_PROFILE=trackside_hls` only in local operational
+configuration. The profile keeps the input endpoint out of Git, passes
+resilient HLS options before `-i`, constructs a CRLF-separated Origin/Referer
+header block, and requires an explicit program video/audio mapping after the
+input. It stream-copies into the existing timestamped MPEG-TS chunk format and
+retains FFmpeg stdin so the service can issue a graceful `q` stop. Recorder
+status and logs show only configuration state, never the input or header data.
+The first controlled direct-input check confirmed the expected stream layout,
+but the input ended before a 60-second rollover. The service intentionally does
+not hide that condition behind an unbounded restart loop; an explicit bounded
+recovery policy requires separate qualification before unattended use.
+
 ## Bridge API
 
 `/api/bridge/v1` is the future private service-to-service boundary for People

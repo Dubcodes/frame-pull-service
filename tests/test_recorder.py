@@ -37,6 +37,7 @@ class RecorderTests(unittest.TestCase):
             database_url=f"sqlite:///{(self.root / 'service.sqlite').as_posix()}", min_input_bytes=1,
             stable_for_seconds=0, recorder_enabled=True, recorder_input=str(self.input),
             recorder_chunk_minutes=0.05, recorder_min_free_space_gb=0,
+            recorder_profile="generic", recorder_origin="", recorder_referer="", recorder_program=None,
         )
         self.engine = create_db_engine(self.settings)
         init_db(self.engine)
@@ -72,7 +73,7 @@ class RecorderTests(unittest.TestCase):
         self.fail("recorder did not reach the expected state")
 
     def test_disabled_or_unconfigured_recorder_cannot_start_and_redacts_input(self):
-        self.assertEqual(redact_input("https://user:secret@example.test/live?token=private"), "https://example.test/...")
+        self.assertEqual(redact_input("https://user:secret@example.test/live?token=private"), "Configured")
         with self.sessions() as session:
             update_settings(session, {"recorder_enabled": False})
             with self.assertRaisesRegex(RuntimeError, "disabled"):
@@ -80,6 +81,41 @@ class RecorderTests(unittest.TestCase):
             update_settings(session, {"recorder_enabled": True})
             self.settings.recorder_input = ""
             with self.assertRaisesRegex(RuntimeError, "input"):
+                self.recorder.start(session)
+
+    def test_trackside_profile_places_structured_input_options_before_input(self):
+        source = "https://user:secret@stream.example.test/live/master.m3u8?token=private"
+        self.settings.recorder_input = source
+        self.settings.recorder_profile = "trackside_hls"
+        self.settings.recorder_origin = "https://origin.example.test"
+        self.settings.recorder_referer = "https://origin.example.test/"
+        self.settings.recorder_program = 1
+        command = self.recorder._command(1)
+        input_index = command.index("-i")
+        self.assertLess(command.index("-readrate"), input_index)
+        self.assertLess(command.index("-fflags"), input_index)
+        self.assertLess(command.index("-rw_timeout"), input_index)
+        self.assertLess(command.index("-reconnect"), input_index)
+        self.assertLess(command.index("-headers"), input_index)
+        self.assertEqual(command[command.index("-headers") + 1], "Origin: https://origin.example.test\r\nReferer: https://origin.example.test/\r\n")
+        self.assertGreater(command.index("0:p:1:v:0"), input_index)
+        self.assertGreater(command.index("0:p:1:a:0"), input_index)
+        self.assertNotIn("0", command[input_index + 2:])
+        self.assertNotIn("-nostdin", command)
+        logged = self.recorder._log_command(command)
+        self.assertNotIn("secret", logged)
+        self.assertNotIn("private", logged)
+        self.assertNotIn("origin.example.test", logged)
+
+    def test_trackside_profile_requires_headers_and_explicit_program(self):
+        self.settings.recorder_profile = "trackside_hls"
+        with self.sessions() as session:
+            with self.assertRaisesRegex(RuntimeError, "Origin and Referer"):
+                self.recorder.start(session)
+        self.settings.recorder_origin = "https://origin.example.test"
+        self.settings.recorder_referer = "https://origin.example.test/"
+        with self.sessions() as session:
+            with self.assertRaisesRegex(RuntimeError, "program"):
                 self.recorder.start(session)
 
     def test_synthetic_stream_copy_rolls_and_normal_discovery_never_sees_active_chunk(self):

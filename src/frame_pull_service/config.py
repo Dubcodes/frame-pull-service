@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     broadcast_timezone: str = "Pacific/Auckland"
     recorder_enabled: bool = False
     recorder_input: str = ""
+    recorder_profile: str = "generic"
+    recorder_origin: str = ""
+    recorder_referer: str = ""
+    recorder_program: int | None = None
     recorder_ffmpeg_path: str = "ffmpeg"
     recorder_output_dir: Path | None = None
     recorder_chunk_minutes: float = 60.0

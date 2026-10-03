@@ -1,5 +1,23 @@
 # Current State
 
+## V2.5A Trackside HLS profile checkpoint
+
+- The recorder supports a local-only `trackside_hls` profile with structured
+  pre-input resilience options, CRLF Origin/Referer headers, and mandatory
+  configured program video/audio mapping. The endpoint and headers remain
+  absent from source control, logs, and public status.
+- The initial real-input shadow qualification remains controlled: processing,
+  autoqueue, automatic race-day mode, and source deletion remain off. No
+  shadow chunk is a production recording or job.
+- On 2026-10-02 the direct HLS probe confirmed the configured program's H.264
+  1280x720/25 video and AAC stereo/48 kHz audio. The isolated recorder also
+  proved active-chunk discovery exclusion, but the source ended cleanly after
+  9.36 seconds (5,120,932 bytes) before its first 60-second rollover. The service does
+  not reproduce the Pi's unbounded shell restart loop, so real shadow
+  qualification is deliberately stopped pending an explicit bounded recovery
+  design and another controlled test.
+- **REAL i5 PERFORMANCE BENCHMARK NOT YET RUN.**
+
 ## V2.4 dedicated recorder checkpoint
 
 - `FFmpegRecorder` is implemented as a configurable, secret-safe rolling

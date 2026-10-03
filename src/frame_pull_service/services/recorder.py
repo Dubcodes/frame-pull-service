@@ -23,14 +23,8 @@ CHUNK_SEQUENCE = re.compile(r"_(\d+)\.ts$", re.I)
 
 
 def redact_input(value: str) -> str:
-    """Return a useful configuration indication without retaining credentials."""
-    if not value:
-        return "Not configured"
-    if "://" not in value:
-        return "Configured"
-    scheme, _, rest = value.partition("://")
-    host = rest.split("/", 1)[0].rsplit("@", 1)[-1]
-    return f"{scheme}://{host}/..."
+    """Expose configuration state without retaining endpoint details."""
+    return "Configured" if value else "Not configured"
 
 
 @dataclass(frozen=True)
@@ -114,6 +108,9 @@ class FFmpegRecorder(RecorderAdapter):
             return False, "Recorder is disabled."
         if not self.settings.recorder_input:
             return False, "Recorder input is not configured."
+        profile_error = self._profile_error()
+        if profile_error:
+            return False, profile_error
         if not self._ffmpeg_available():
             return False, "FFmpeg executable is unavailable."
         free = self._free_space_gb()
@@ -130,6 +127,43 @@ class FFmpegRecorder(RecorderAdapter):
         # while retaining an accurate chunk-start timestamp and unique rolls.
         return self.settings.resolved_recorder_output_dir / "trackside_%Y%m%d-%H%M_%S.ts"
 
+    def _profile_error(self) -> str | None:
+        profile = self.settings.recorder_profile.strip().lower()
+        if profile == "generic":
+            return None
+        if profile != "trackside_hls":
+            return f"Unsupported recorder profile: {profile or 'unset'}."
+        if not self.settings.recorder_origin or not self.settings.recorder_referer:
+            return "Trackside HLS requires configured Origin and Referer headers."
+        if self.settings.recorder_program is None or self.settings.recorder_program < 0:
+            return "Trackside HLS requires an explicit non-negative program number."
+        return None
+
+    def _trackside_headers(self) -> str:
+        """Return FFmpeg's required CRLF-terminated HTTP header block."""
+        return f"Origin: {self.settings.recorder_origin}\r\nReferer: {self.settings.recorder_referer}\r\n"
+
+    def _input_options(self) -> list[str]:
+        if self.settings.recorder_profile.strip().lower() != "trackside_hls":
+            return []
+        return [
+            "-readrate", "1.0",
+            "-fflags", "+discardcorrupt",
+            "-rw_timeout", "15000000",
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "10",
+            "-headers", self._trackside_headers(),
+        ]
+
+    def _mapping_options(self) -> list[str]:
+        if self.settings.recorder_profile.strip().lower() == "trackside_hls":
+            program = self.settings.recorder_program
+            if program is None:
+                raise RuntimeError("Trackside HLS program mapping is not configured.")
+            return ["-map", f"0:p:{program}:v:0", "-map", f"0:p:{program}:a:0"]
+        return ["-map", "0"]
+
     def _command(self, chunk_minutes: int) -> list[str]:
         source = self.settings.recorder_input
         command = [self.settings.recorder_ffmpeg_path, "-hide_banner", "-y"]
@@ -137,7 +171,10 @@ class FFmpegRecorder(RecorderAdapter):
         # looped and are never committed to source control.
         if Path(source).is_file():
             command.extend(["-stream_loop", "-1", "-re"])
-        command.extend(["-i", source, "-map", "0", "-c", "copy"])
+        command.extend(self._input_options())
+        command.extend(["-i", source])
+        command.extend(self._mapping_options())
+        command.extend(["-c", "copy"])
         if self.settings.recorder_extra_args:
             command.extend(shlex.split(self.settings.recorder_extra_args))
         command.extend([
@@ -148,7 +185,20 @@ class FFmpegRecorder(RecorderAdapter):
         return command
 
     def _log_command(self, command: list[str]) -> str:
-        return " ".join(shlex.quote(part if part != self.settings.recorder_input else redact_input(part)) for part in command)
+        redacted: list[str] = []
+        hide_next = False
+        for part in command:
+            if hide_next:
+                redacted.append("<redacted>")
+                hide_next = False
+            elif part == self.settings.recorder_input:
+                redacted.append(redact_input(part))
+            elif part == "-headers":
+                redacted.append(part)
+                hide_next = True
+            else:
+                redacted.append(part)
+        return " ".join(shlex.quote(part) for part in redacted)
 
     @staticmethod
     def _sequence(path: Path | None) -> int | None:
