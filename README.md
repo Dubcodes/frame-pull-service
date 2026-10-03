@@ -183,6 +183,18 @@ A second broadcast-window gate at 2026-10-04 08:58 NZDT produced the same
 sanitized incomplete-program result. Live capture remained blocked and no
 mapping or recovery-policy change was inferred from source inactivity.
 
+V2.5F qualified the endpoint advertised by the current Trackside website while
+keeping its value only in ignored local configuration. The endpoint exposes
+shared AAC stereo/48 kHz audio with H.264 25 fps variants at 640x360 (program 0)
+and 1280x720 (program 1); the existing explicit program-1 mapping therefore
+selects the desired 720p feed. A direct stream-copy ran for 105.000 seconds, and
+an isolated recorder run produced two complete 60.000-second chunks on one PID,
+with active-file exclusion, READY/QUEUED handoff, paused claim blocking, and
+clean stop behavior all verified. The old 9.36-second process exit did not
+recur, showing that the older OnDemand endpoint was not representative of the
+website's current live player. Bounded reconnect options remain as resilience;
+no application restart loop is required for normal operation.
+
 ## Bridge API
 
 `/api/bridge/v1` is the future private service-to-service boundary for People

@@ -35,6 +35,19 @@
   start remains allowed. At 2026-10-04 08:58 NZDT, the one permitted bounded
   probe still found program 1 missing at least one usable video/audio stream,
   so live shadow work stopped at the availability gate.
+- V2.5F replaced only the ignored local input configuration with the endpoint
+  advertised by the current Trackside website; the endpoint itself remains out
+  of Git. Its live structure contains shared AAC stereo/48 kHz audio plus H.264
+  25 fps video variants at 640x360 (program 0) and 1280x720 (program 1), so the
+  existing explicit program-1 mapping remains correct. A direct stream-copy
+  test captured 105.000 seconds (56,169,700 bytes) without the old 9.36-second
+  process exit. The isolated recorder then produced two complete 60.000-second
+  1280x720 H.264/AAC chunks on one PID, protected the active chunk, completed
+  READY -> QUEUED handoff with paused claim blocked, and closed cleanly for both
+  stop-after-current and normal graceful stop. The stop operations preserved
+  valid 2.2-second and 1.0-second trailing chunks for review rather than deleting
+  them. The older OnDemand endpoint behavior was not representative of the
+  website's current live player.
 - **REAL i5 PERFORMANCE BENCHMARK NOT YET RUN.**
 
 ## V2.4 dedicated recorder checkpoint
