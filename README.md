@@ -138,7 +138,11 @@ Every recorder session persists its race-day/manual origin, planned end, PID,
 active chunk, stop request, log path, exit code, and error state. On an API
 restart the service never kills a remembered PID: an unproven live process is
 marked `uncertain`, while a missing PID is marked failed. FFmpeg crashes are
-recorded and do not auto-retry indefinitely.
+recorded and do not auto-retry indefinitely. The active chunk sequence is a
+per-session monotonic counter; the two-digit filename suffix remains the
+chunk's wall-clock second and is not treated as ordering metadata. Terminal
+session status, including `source_ended`, remains visible to the operator but
+does not block a deliberate future start.
 
 The current chunk is excluded from normal discovery while recording,
 finalizing, or gracefully stopping. After a roll or final stop, the closed
@@ -174,6 +178,10 @@ bounded sanitized probe found that configured program 1 did not expose both a
 usable video stream and a usable audio stream, so no shadow capture or mapping
 change was attempted. Continuous live rollover remains unqualified until that
 same program passes a future one-probe gate.
+
+A second broadcast-window gate at 2026-10-04 08:58 NZDT produced the same
+sanitized incomplete-program result. Live capture remained blocked and no
+mapping or recovery-policy change was inferred from source inactivity.
 
 ## Bridge API
 

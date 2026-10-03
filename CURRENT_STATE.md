@@ -28,6 +28,13 @@
   change, repeated probe, recorder process, worker, or detector run followed.
   Real continuity, rollover, stop behavior, and isolated queue handoff remain
   unqualified until a healthy program-1 probe succeeds.
+- The V2.5D audit corrected two recorder-state semantics without changing the
+  filename format: `active_chunk_sequence` is now a true per-session monotonic
+  counter instead of the filename's clock-second suffix, and terminal recorder
+  status remains operator-visible after `source_ended` while a deliberate new
+  start remains allowed. At 2026-10-04 08:58 NZDT, the one permitted bounded
+  probe still found program 1 missing at least one usable video/audio stream,
+  so live shadow work stopped at the availability gate.
 - **REAL i5 PERFORMANCE BENCHMARK NOT YET RUN.**
 
 ## V2.4 dedicated recorder checkpoint

@@ -20,7 +20,6 @@ from .operations import get_value
 
 
 ACTIVE_SESSION_STATES = ("recording", "stopping", "finalizing", "uncertain")
-CHUNK_SEQUENCE = re.compile(r"_(\d+)\.ts$", re.I)
 URL_PATTERN = re.compile(r"https?://[^\s'\"]+")
 
 
@@ -89,11 +88,16 @@ class FFmpegRecorder(RecorderAdapter):
         self._children: dict[int, subprocess.Popen] = {}
         self._log_threads: dict[int, threading.Thread] = {}
 
-    def _session(self, session: Session) -> RecordingSession | None:
+    def _active_session(self, session: Session) -> RecordingSession | None:
         return session.execute(
             select(RecordingSession)
             .where(RecordingSession.status.in_(ACTIVE_SESSION_STATES))
             .order_by(RecordingSession.id.desc())
+        ).scalars().first()
+
+    def _latest_session(self, session: Session) -> RecordingSession | None:
+        return session.execute(
+            select(RecordingSession).order_by(RecordingSession.id.desc())
         ).scalars().first()
 
     def _free_space_gb(self) -> float | None:
@@ -232,11 +236,6 @@ class FFmpegRecorder(RecorderAdapter):
         finally:
             process.stderr.close()
 
-    @staticmethod
-    def _sequence(path: Path | None) -> int | None:
-        match = CHUNK_SEQUENCE.search(path.name) if path else None
-        return int(match.group(1)) if match else None
-
     def _latest_chunk(self) -> Path | None:
         output = self.settings.resolved_recorder_output_dir
         try:
@@ -257,10 +256,10 @@ class FFmpegRecorder(RecorderAdapter):
                              row.stop_after_chunk)
 
     def status(self, session: Session | None = None) -> RecorderState:
-        return self._state(self._session(session)) if session else RecorderState(health="unknown", input_state=redact_input(self.settings.recorder_input), free_space_gb=self._free_space_gb())
+        return self._state(self._latest_session(session)) if session else RecorderState(health="unknown", input_state=redact_input(self.settings.recorder_input), free_space_gb=self._free_space_gb())
 
     def start(self, session: Session, race_day=None, planned_end=None, *, manual: bool = True) -> RecorderState:
-        existing = self._session(session)
+        existing = self._active_session(session)
         if existing:
             raise RuntimeError("A recorder session is already active or requires operator reconciliation.")
         allowed, reason = self._configured(session)
@@ -295,7 +294,7 @@ class FFmpegRecorder(RecorderAdapter):
         return self._state(row)
 
     def refresh(self, session: Session) -> RecorderState:
-        row = self._session(session)
+        row = self._active_session(session)
         if row is None:
             return self.status(session)
         process = self._children.get(row.ffmpeg_pid or -1)
@@ -332,7 +331,8 @@ class FFmpegRecorder(RecorderAdapter):
         newest = self._latest_chunk()
         previous = Path(row.active_path) if row.active_path else None
         if newest and newest != previous:
-            row.active_path, row.active_chunk_sequence = str(newest.resolve()), self._sequence(newest)
+            row.active_path = str(newest.resolve())
+            row.active_chunk_sequence = (row.active_chunk_sequence or 0) + 1
             row.active_chunk_started_at = datetime.fromtimestamp(newest.stat().st_mtime)
             if row.stop_after_chunk and previous is not None:
                 return self.stop(session)
@@ -340,7 +340,7 @@ class FFmpegRecorder(RecorderAdapter):
         return self._state(row)
 
     def stop_after_current_chunk(self, session: Session) -> RecorderState:
-        row = self._session(session)
+        row = self._active_session(session)
         if row is None or row.status != "recording":
             return self.status(session)
         row.stop_after_chunk = True
@@ -348,7 +348,7 @@ class FFmpegRecorder(RecorderAdapter):
         return self._state(row)
 
     def stop(self, session: Session, *, hard: bool = False) -> RecorderState:
-        row = self._session(session)
+        row = self._active_session(session)
         if row is None:
             return self.status(session)
         process = self._children.get(row.ffmpeg_pid or -1)

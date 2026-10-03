@@ -140,6 +140,39 @@ class RecorderTests(unittest.TestCase):
             state = self.recorder.refresh(session)
             self.assertEqual(state.state, "source_ended")
             self.assertIn("ended unexpectedly", state.error)
+            persisted = self.recorder.status(session)
+            self.assertEqual(persisted.state, "source_ended")
+            self.assertIn("ended unexpectedly", persisted.error)
+            restarted = self.recorder.start(session)
+            self.assertTrue(restarted.running)
+
+    def test_active_chunk_sequence_is_monotonic_not_filename_seconds(self):
+        class RunningProcess:
+            pid = 76124
+            stdin = BytesIO()
+            stderr = BytesIO()
+            returncode = None
+            def poll(self): return self.returncode
+            def terminate(self): self.returncode = -15
+
+        first = self.output / "trackside_20261004-1259_59.ts"
+        second = self.output / "trackside_20261004-1300_00.ts"
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+        process = RunningProcess()
+        with self.sessions() as session:
+            row = RecordingSession(status="recording", adapter_name="ffmpeg", ffmpeg_pid=process.pid,
+                                   started_at=datetime.now(), active_path=str(first), active_chunk_sequence=1)
+            session.add(row); session.commit()
+            self.recorder._children[process.pid] = process
+            original = self.recorder._latest_chunk
+            self.recorder._latest_chunk = lambda: second
+            try:
+                state = self.recorder.refresh(session)
+            finally:
+                self.recorder._latest_chunk = original
+            self.assertEqual(state.active_path, second.resolve())
+            self.assertEqual(state.active_chunk_sequence, 2)
 
     def test_trackside_profile_requires_headers_and_explicit_program(self):
         self.settings.recorder_profile = "trackside_hls"
