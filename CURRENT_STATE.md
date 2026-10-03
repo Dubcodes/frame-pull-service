@@ -16,6 +16,12 @@
   not reproduce the Pi's unbounded shell restart loop, so real shadow
   qualification is deliberately stopped pending an explicit bounded recovery
   design and another controlled test.
+- V2.5B adds bounded FFmpeg-level EOF recovery (`reconnect_at_eof`, a maximum
+  of three retries, and a 30-second total reconnect-delay limit) while keeping
+  one recorder process and no-clobber output. A subsequent isolated live probe
+  found program entries but no usable stream records, so it was stopped before
+  recording. Real continuity and rollover remain unqualified; no automatic
+  application restart loop has been introduced.
 - **REAL i5 PERFORMANCE BENCHMARK NOT YET RUN.**
 
 ## V2.4 dedicated recorder checkpoint

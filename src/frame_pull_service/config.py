@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     recorder_origin: str = ""
     recorder_referer: str = ""
     recorder_program: int | None = None
+    recorder_reconnect_max_retries: int = 3
+    recorder_reconnect_delay_total_max: int = 30
     recorder_ffmpeg_path: str = "ffmpeg"
     recorder_output_dir: Path | None = None
     recorder_chunk_minutes: float = 60.0

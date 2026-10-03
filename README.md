@@ -162,10 +162,12 @@ header block, and requires an explicit program video/audio mapping after the
 input. It stream-copies into the existing timestamped MPEG-TS chunk format and
 retains FFmpeg stdin so the service can issue a graceful `q` stop. Recorder
 status and logs show only configuration state, never the input or header data.
-The first controlled direct-input check confirmed the expected stream layout,
-but the input ended before a 60-second rollover. The service intentionally does
-not hide that condition behind an unbounded restart loop; an explicit bounded
-recovery policy requires separate qualification before unattended use.
+The profile treats a short finite playlist as an FFmpeg-level recovery event:
+it enables reconnect-at-EOF, network reconnect, and configurable retry/total
+delay limits while keeping one FFmpeg process. An unexpected clean process exit
+is recorded as `source_ended`, not a successful recording. There is no
+application-level infinite restart loop. Output uses FFmpeg no-clobber mode so
+an unexpected filename collision fails safely instead of replacing media.
 
 ## Bridge API
 

@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from io import BytesIO
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -96,16 +97,49 @@ class RecorderTests(unittest.TestCase):
         self.assertLess(command.index("-fflags"), input_index)
         self.assertLess(command.index("-rw_timeout"), input_index)
         self.assertLess(command.index("-reconnect"), input_index)
+        self.assertLess(command.index("-reconnect_at_eof"), input_index)
         self.assertLess(command.index("-headers"), input_index)
         self.assertEqual(command[command.index("-headers") + 1], "Origin: https://origin.example.test\r\nReferer: https://origin.example.test/\r\n")
         self.assertGreater(command.index("0:p:1:v:0"), input_index)
         self.assertGreater(command.index("0:p:1:a:0"), input_index)
         self.assertNotIn("0", command[input_index + 2:])
         self.assertNotIn("-nostdin", command)
+        self.assertIn("-n", command)
         logged = self.recorder._log_command(command)
         self.assertNotIn("secret", logged)
         self.assertNotIn("private", logged)
         self.assertNotIn("origin.example.test", logged)
+
+    def test_trackside_profile_uses_bounded_eof_reconnect_and_sanitizes_runtime_log(self):
+        self.settings.recorder_profile = "trackside_hls"
+        self.settings.recorder_origin = "https://origin.example.test"
+        self.settings.recorder_referer = "https://origin.example.test/"
+        self.settings.recorder_program = 1
+        self.settings.recorder_reconnect_max_retries = 3
+        self.settings.recorder_reconnect_delay_total_max = 30
+        command = self.recorder._command(1)
+        self.assertEqual(command[command.index("-reconnect_at_eof") + 1], "1")
+        self.assertEqual(command[command.index("-reconnect_max_retries") + 1], "3")
+        self.assertEqual(command[command.index("-reconnect_delay_total_max") + 1], "30")
+        sanitized = self.recorder._sanitize_log_line(b"Opening 'https://user:secret@stream.example.test/live?opaque=private' for reading\n").decode()
+        self.assertNotIn("secret", sanitized)
+        self.assertNotIn("private", sanitized)
+        self.assertNotIn("stream.example.test", sanitized)
+
+    def test_unexpected_clean_exit_is_source_ended_not_closed(self):
+        class ExitedProcess:
+            pid = 76123
+            stdin = BytesIO()
+            stderr = BytesIO()
+            def poll(self): return 0
+        process = ExitedProcess()
+        with self.sessions() as session:
+            row = RecordingSession(status="recording", adapter_name="ffmpeg", ffmpeg_pid=process.pid, started_at=datetime.now())
+            session.add(row); session.commit()
+            self.recorder._children[process.pid] = process
+            state = self.recorder.refresh(session)
+            self.assertEqual(state.state, "source_ended")
+            self.assertIn("ended unexpectedly", state.error)
 
     def test_trackside_profile_requires_headers_and_explicit_program(self):
         self.settings.recorder_profile = "trackside_hls"

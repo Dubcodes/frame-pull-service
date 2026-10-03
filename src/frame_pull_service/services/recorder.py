@@ -6,6 +6,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from .operations import get_value
 
 ACTIVE_SESSION_STATES = ("recording", "stopping", "finalizing", "uncertain")
 CHUNK_SEQUENCE = re.compile(r"_(\d+)\.ts$", re.I)
+URL_PATTERN = re.compile(r"https?://[^\s'\"]+")
 
 
 def redact_input(value: str) -> str:
@@ -85,6 +87,7 @@ class FFmpegRecorder(RecorderAdapter):
         self._popen = popen
         self._disk_usage = disk_usage
         self._children: dict[int, subprocess.Popen] = {}
+        self._log_threads: dict[int, threading.Thread] = {}
 
     def _session(self, session: Session) -> RecordingSession | None:
         return session.execute(
@@ -137,6 +140,8 @@ class FFmpegRecorder(RecorderAdapter):
             return "Trackside HLS requires configured Origin and Referer headers."
         if self.settings.recorder_program is None or self.settings.recorder_program < 0:
             return "Trackside HLS requires an explicit non-negative program number."
+        if self.settings.recorder_reconnect_max_retries < 0 or self.settings.recorder_reconnect_delay_total_max < 0:
+            return "Trackside HLS reconnect limits must be non-negative."
         return None
 
     def _trackside_headers(self) -> str:
@@ -151,8 +156,12 @@ class FFmpegRecorder(RecorderAdapter):
             "-fflags", "+discardcorrupt",
             "-rw_timeout", "15000000",
             "-reconnect", "1",
+            "-reconnect_at_eof", "1",
+            "-reconnect_on_network_error", "1",
             "-reconnect_streamed", "1",
             "-reconnect_delay_max", "10",
+            "-reconnect_max_retries", str(self.settings.recorder_reconnect_max_retries),
+            "-reconnect_delay_total_max", str(self.settings.recorder_reconnect_delay_total_max),
             "-headers", self._trackside_headers(),
         ]
 
@@ -166,7 +175,9 @@ class FFmpegRecorder(RecorderAdapter):
 
     def _command(self, chunk_minutes: int) -> list[str]:
         source = self.settings.recorder_input
-        command = [self.settings.recorder_ffmpeg_path, "-hide_banner", "-y"]
+        # `-n` makes an unexpected path collision fail rather than silently
+        # replacing a previously captured interval.
+        command = [self.settings.recorder_ffmpeg_path, "-hide_banner", "-n"]
         # A local file is only used by synthetic qualification. Live URLs are not
         # looped and are never committed to source control.
         if Path(source).is_file():
@@ -199,6 +210,27 @@ class FFmpegRecorder(RecorderAdapter):
             else:
                 redacted.append(part)
         return " ".join(shlex.quote(part) for part in redacted)
+
+    def _sanitize_log_line(self, line: bytes) -> bytes:
+        text = line.decode("utf-8", "replace")
+        for value in (self.settings.recorder_input, self.settings.recorder_origin, self.settings.recorder_referer):
+            if value:
+                text = text.replace(value, "<redacted>")
+        return URL_PATTERN.sub("<redacted-url>", text).encode("utf-8", "replace")
+
+    def _drain_log(self, process: subprocess.Popen, path: Path) -> None:
+        if process.stderr is None:
+            return
+        try:
+            with path.open("ab") as handle:
+                # FFmpeg progress uses carriage returns rather than lines. A
+                # chunked read prevents its stderr pipe from back-pressuring
+                # segment rollover on Windows.
+                while chunk := process.stderr.read1(4096):
+                    handle.write(self._sanitize_log_line(chunk))
+                    handle.flush()
+        finally:
+            process.stderr.close()
 
     @staticmethod
     def _sequence(path: Path | None) -> int | None:
@@ -249,16 +281,16 @@ class FFmpegRecorder(RecorderAdapter):
             log.parent.mkdir(parents=True, exist_ok=True)
             with log.open("a", encoding="utf-8") as handle:
                 handle.write(f"{started.isoformat()} recorder start: {self._log_command(command)}\n")
-            # Popen inherits/duplicates this descriptor; the service keeps no
-            # parent-side log handle open for the lifetime of the recorder.
-            with log.open("ab") as stream:
-                process = self._popen(command, stdin=subprocess.PIPE, stdout=stream, stderr=subprocess.STDOUT, shell=False)
+            process = self._popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, shell=False)
         except OSError as exc:
             row.status, row.error_summary, row.stopped_at = "failed", redact_input(str(exc)), datetime.now()
             session.commit()
             raise RuntimeError("FFmpeg recorder could not be started.") from exc
         row.status, row.ffmpeg_pid = "recording", process.pid
         self._children[process.pid] = process
+        thread = threading.Thread(target=self._drain_log, args=(process, log), daemon=True, name=f"recorder-log-{process.pid}")
+        self._log_threads[process.pid] = thread
+        thread.start()
         session.commit()
         return self._state(row)
 
@@ -277,11 +309,18 @@ class FFmpegRecorder(RecorderAdapter):
         exit_code = process.poll()
         if exit_code is not None:
             self._children.pop(process.pid, None)
+            thread = self._log_threads.pop(process.pid, None)
+            if thread:
+                thread.join(timeout=2)
             if process.stdin:
                 process.stdin.close()
             row.exit_code, row.stopped_at = exit_code, datetime.now()
-            row.status = "closed" if row.status in {"stopping", "finalizing"} and exit_code == 0 else "failed"
-            if row.status == "failed": row.error_summary = f"FFmpeg exited with code {exit_code}."
+            if row.status in {"stopping", "finalizing"} and exit_code == 0:
+                row.status = "closed"
+            elif exit_code == 0:
+                row.status, row.error_summary = "source_ended", "Recorder input ended unexpectedly before an operator stop."
+            else:
+                row.status, row.error_summary = "failed", f"FFmpeg exited with code {exit_code}."
             row.active_path = None
             session.commit()
             return self._state(row)
