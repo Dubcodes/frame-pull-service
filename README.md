@@ -169,6 +169,12 @@ is recorded as `source_ended`, not a successful recording. There is no
 application-level infinite restart loop. Output uses FFmpeg no-clobber mode so
 an unexpected filename collision fails safely instead of replacing media.
 
+Live qualification remains availability-gated. On 2026-10-04 the single
+bounded sanitized probe found that configured program 1 did not expose both a
+usable video stream and a usable audio stream, so no shadow capture or mapping
+change was attempted. Continuous live rollover remains unqualified until that
+same program passes a future one-probe gate.
+
 ## Bridge API
 
 `/api/bridge/v1` is the future private service-to-service boundary for People

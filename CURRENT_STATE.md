@@ -22,6 +22,12 @@
   found program entries but no usable stream records, so it was stopped before
   recording. Real continuity and rollover remain unqualified; no automatic
   application restart loop has been introduced.
+- On 2026-10-04 the V2.5C single bounded live probe again found that configured
+  program 1 did not expose both a usable video stream and a usable audio stream.
+  The availability gate therefore stopped live work before capture. No mapping
+  change, repeated probe, recorder process, worker, or detector run followed.
+  Real continuity, rollover, stop behavior, and isolated queue handoff remain
+  unqualified until a healthy program-1 probe succeeds.
 - **REAL i5 PERFORMANCE BENCHMARK NOT YET RUN.**
 
 ## V2.4 dedicated recorder checkpoint
