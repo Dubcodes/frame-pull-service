@@ -1,5 +1,28 @@
 # Current State
 
+## V2.6 controlled one-chunk processing checkpoint
+
+- Exactly one preserved V2.5F recorder chunk,
+  `trackside_20261004-0931_39.ts` (60.000 seconds, 32,049,676 bytes), was
+  copied into a new ignored qualification root and processed through normal
+  discovery, explicit queueing, isolated pause/claim handling, the service
+  worker job path, the frozen legacy adapter, and normalization.
+- The adapter invoked one explicit `--input` and no `--all` or `--rerun`, with
+  its config, output, work, and log paths owned by the isolated service job.
+  The detector exited 0 after 9.172 seconds; the job and recording completed.
+- This sample produced zero authenticated interviews and zero candidates, so
+  there were no evidence packages or clips to validate. The isolated dashboard
+  represented the completed recording/job and the review queue remained empty,
+  without bogus review cards. Calendar context was therefore not applicable.
+- The frozen legacy config checksum and ordinary legacy `output`/`work`
+  metadata were unchanged. Production remained at 93 recordings and 94 jobs
+  (81 queued, 12 complete, 1 failed), with 12 interviews and 4 appearance
+  groups; processing stayed paused and autoqueue, automatic mode, and source
+  deletion stayed off. Both the original and isolated source copies remain.
+- **ONE-CHUNK PIPELINE PASSED, POSITIVE INTERVIEW EVIDENCE STILL REQUIRES A
+  CONTENT-POSITIVE SAMPLE.**
+- **REAL i5 PERFORMANCE BENCHMARK NOT YET RUN.**
+
 ## V2.5A Trackside HLS profile checkpoint
 
 - The recorder supports a local-only `trackside_hls` profile with structured

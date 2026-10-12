@@ -195,6 +195,25 @@ recur, showing that the older OnDemand endpoint was not representative of the
 website's current live player. Bounded reconnect options remain as resilience;
 no application restart loop is required for normal operation.
 
+### Controlled one-chunk processing qualification
+
+V2.6 processed exactly one preserved real V2.5F recorder chunk,
+`trackside_20261004-0931_39.ts`, through isolated discovery, one explicit job,
+the normal worker path, the frozen legacy detector, and service normalization.
+The adapter used exactly one explicit `--input`, no batch flags, and isolated
+service-owned config/output/work paths. The detector exited successfully after
+9.172 seconds and completed the job with zero authenticated interviews and zero
+candidates. Consequently there were no evidence packages or clips to validate;
+the isolated dashboard showed the completed recording/job and the review queue
+correctly remained empty.
+
+The legacy config and ordinary legacy output/work locations were unchanged,
+and production remained paused with all 81 historical queued jobs untouched.
+Both the original recorder chunk and its isolated qualification copy were
+preserved. **ONE-CHUNK PIPELINE PASSED, POSITIVE INTERVIEW EVIDENCE STILL
+REQUIRES A CONTENT-POSITIVE SAMPLE.** This functional development-machine run
+is not the real i5 performance benchmark.
+
 ## Bridge API
 
 `/api/bridge/v1` is the future private service-to-service boundary for People

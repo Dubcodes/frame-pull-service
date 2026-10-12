@@ -47,11 +47,17 @@ class LegacySubprocessEngine:
         config_path.write_text(text, encoding="utf-8")
         return config_path
 
+    def _command(self, config: Path, source: Path) -> list[str]:
+        command = [str(self.settings.legacy_python), "-u", "profile_extractor.py", "--config", str(config), "--input", str(source)]
+        if command.count("--input") != 1 or "--all" in command or "--rerun" in command:
+            raise RuntimeError("Unsafe legacy detector invocation was rejected.")
+        return command
+
     def run(self, source: Path, job_dir: Path, on_output: Callable[[str], None] | None = None) -> LegacyResult:
         job_dir.mkdir(parents=True, exist_ok=True)
         config = self._job_config(source, job_dir)
         log_path = job_dir / "legacy_engine.log"
-        command = [str(self.settings.legacy_python), "-u", "profile_extractor.py", "--config", str(config), "--input", str(source)]
+        command = self._command(config, source)
         with log_path.open("w", encoding="utf-8") as log:
             process = subprocess.Popen(command, cwd=self.settings.legacy_engine_root, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, text=True, bufsize=1)
