@@ -1,5 +1,34 @@
 # Current State
 
+## V2.7 known-positive evidence checkpoint
+
+- A preserved copy of the known-positive historical source
+  `trackside_20260816-1237_016.ts` was processed through the existing V2.6
+  isolated one-job tool. The original remained unchanged at 1,939,177,700
+  bytes, mtime `2026-08-16T01:37:40.4270820Z`, and SHA-256
+  `83FDD0A8ABC164029C0C29EB5F6C9AE1C1B6E53301B4ABEEB6EC265FD8630C5D`.
+- The frozen detector exited 0 after 479.312 seconds and reproduced the
+  historical positive result: six authenticated/normalized interviews, six
+  evidence packages, and 22 candidates. All six manifests were internally
+  consistent and path-contained; all clips were playable H.264/AAC with
+  durations matching stored bounds; all posters and candidates decoded.
+- Visual inspection of three positions from every clip showed the represented
+  interview/lower-third event rather than unrelated race footage. Ryan Foote's
+  isolated clip remained 329.25-334.00 seconds, and its selected candidate was
+  interview evidence rather than the previously corrected race-frame drift.
+  One package legitimately contained no candidate portrait.
+- Review remained pending throughout. Four names met the existing trusted-OCR
+  rule; the two single-timestamp OCR candidates remained tentative and did not
+  populate final identity. Calendar context stayed unknown because the
+  isolated database had no cached races; it did not establish identity.
+- The isolated dashboard, People and Interviews modes, all six detail pages,
+  clip playback, posters, candidates, and technical evidence rendered. HTTP
+  Range returned 206 and API JSON exposed no local paths. No approval, reject,
+  export, or review edit was performed.
+- The legacy config/output/work snapshot and production state were unchanged;
+  all 81 historical queued jobs remain paused. **REAL i5 PERFORMANCE BENCHMARK
+  NOT YET RUN.**
+
 ## V2.6 controlled one-chunk processing checkpoint
 
 - Exactly one preserved V2.5F recorder chunk,

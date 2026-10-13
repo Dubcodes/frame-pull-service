@@ -214,6 +214,27 @@ preserved. **ONE-CHUNK PIPELINE PASSED, POSITIVE INTERVIEW EVIDENCE STILL
 REQUIRES A CONTENT-POSITIVE SAMPLE.** This functional development-machine run
 is not the real i5 performance benchmark.
 
+### Known-positive evidence qualification
+
+V2.7 used one preserved copy of the historical known-positive
+`trackside_20260816-1237_016.ts` source with the same isolated one-job tool.
+The frozen detector exited 0 after 479.312 seconds and reproduced six
+authenticated/normalized interviews, six evidence packages, and 22 candidates.
+Every manifest was internally consistent and service-relative; every clip,
+poster, and candidate decoded successfully. Visual sampling across all clips
+showed the corresponding interview event without unrelated race-footage drift.
+Ryan Foote's new isolated clip retained the verified 329.25-334.00-second
+bounds and useful interview portrait evidence. The zero-candidate package also
+remained valid and reviewable.
+
+The isolated dashboard, both review modes, all six detail pages, media
+playback, candidate gallery, and technical evidence rendered correctly. Range
+playback returned HTTP 206, and public API responses exposed no local paths.
+Trusted and tentative OCR remained distinct, all items remained pending, and
+no review/export state changed. The original source's size, mtime, and SHA-256,
+ordinary legacy state, and production's paused 81-job backlog were unchanged.
+This functional qualification is not the real i5 performance benchmark.
+
 ## Bridge API
 
 `/api/bridge/v1` is the future private service-to-service boundary for People
