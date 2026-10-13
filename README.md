@@ -68,6 +68,30 @@ refresh are off by default. Processing pause is persistent: active jobs finish
 but no worker claims another queued job until resumed. Controlled worker slots
 support 1-4 independent jobs, each with its own legacy config and work folder.
 
+### Held queue and selected release (V2.8)
+
+`QUEUED` means that a job is parked in the durable queue; it does **not** mean
+that the job is eligible to process. Every manual, bulk, reprocess, retry, and
+autoqueue path creates a held job (`released_for_processing=false`). An
+operator must explicitly release a queued job by ID, and global processing
+must also be resumed, before a worker can claim it.
+
+The controls are independent: pause blocks every claim, including released
+jobs; resume permits only released queued jobs; held jobs remain inert. The
+dashboard therefore reports Held, Released, Active, Completed, and Failed
+separately and labels Resume as “Resume released jobs.” Race Day rows provide
+explicit Release/Hold buttons and bounded, explicit-ID bulk controls. There is
+no release-all operation. Hold and release are idempotent and do not change a
+job's `QUEUED` status; processing, complete, failed, and stale jobs reject the
+operation.
+
+The additive SQLite upgrade gives the new column a false default, so the 81
+pre-existing production queued jobs migrated as held without changing job IDs,
+recording relationships, or statuses. Production remains paused with 81 held,
+0 released, and 0 active; autoqueue, automatic Race Day mode, and source
+deletion remain off. Retrying or reprocessing deliberately returns to held and
+requires a fresh release decision.
+
 People is the default review mode. It groups only manually resolved or trusted
 identities within a Race Day; tentative OCR and unknowns remain individual
 interviews. A group retains the independent interview evidence and may select

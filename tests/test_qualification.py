@@ -22,7 +22,7 @@ from frame_pull_service.services.media import clip_bounds, contained_clip_bounds
 from frame_pull_service.services.manifests import write_manifest
 from frame_pull_service.services.normalizer import interview_key
 from frame_pull_service.services.paths import artifact_path, contained_path, relative_artifact, source_path
-from frame_pull_service.services.queue import claim_next_job, queue_recording, recover_stale_jobs
+from frame_pull_service.services.queue import claim_next_job, queue_recording, recover_stale_jobs, set_jobs_released
 from frame_pull_service.services.review import approve, capture_frame, reject, refresh_manifest, save_review, select_candidate
 
 
@@ -68,7 +68,7 @@ class QualificationCase(unittest.TestCase):
         self.add_recording('old.ts')
         with self.sessions() as db: discover_recordings(db,self.settings)
         self.add_recording('new.ts')
-        with self.sessions() as db: discover_recordings(db,self.settings);new=db.query(Recording).filter_by(filename='new.ts').one();self.assertFalse(new.historical);self.assertEqual(new.status,RecordingStatus.QUEUED);self.assertEqual(db.query(Job).count(),1)
+        with self.sessions() as db: discover_recordings(db,self.settings);new=db.query(Recording).filter_by(filename='new.ts').one();job=db.query(Job).one();self.assertFalse(new.historical);self.assertEqual(new.status,RecordingStatus.QUEUED);self.assertFalse(job.released_for_processing);self.assertEqual(db.query(Job).count(),1)
 
     def test_unstable_new_file_waits(self):
         self.add_recording('old.ts')
@@ -96,11 +96,11 @@ class QualificationCase(unittest.TestCase):
         with self.sessions() as db:
             for n in ('a.ts','b.ts'):
                 r=Recording(filename=n,source_path=n,fingerprint=n,size_bytes=100,mtime_epoch=1,status=RecordingStatus.READY);db.add(r);db.flush();queue_recording(db,r)
-            db.commit();first=claim_next_job(db);self.assertIsNotNone(first);self.assertIsNone(claim_next_job(db));self.assertEqual(db.query(Job).filter_by(status=JobStatus.QUEUED).count(),1)
+            db.commit();set_jobs_released(db,[job.id for job in db.query(Job).all()],True);first=claim_next_job(db);self.assertIsNotNone(first);self.assertIsNone(claim_next_job(db));self.assertEqual(db.query(Job).filter_by(status=JobStatus.QUEUED).count(),1)
 
     def test_stale_recovery_marks_recording_failed(self):
         with self.sessions() as db:
-            r=Recording(filename='a.ts',source_path='a',fingerprint='a',size_bytes=1,mtime_epoch=1,status=RecordingStatus.READY);db.add(r);db.flush();queue_recording(db,r);db.commit();job=claim_next_job(db);job.heartbeat_at=datetime.now()-timedelta(days=1);db.commit();self.assertEqual(recover_stale_jobs(db,30),1);self.assertEqual(db.get(Recording,r.id).status,RecordingStatus.FAILED)
+            r=Recording(filename='a.ts',source_path='a',fingerprint='a',size_bytes=1,mtime_epoch=1,status=RecordingStatus.READY);db.add(r);db.flush();queued=queue_recording(db,r);db.commit();set_jobs_released(db,[queued.id],True);job=claim_next_job(db);job.heartbeat_at=datetime.now()-timedelta(days=1);db.commit();self.assertEqual(recover_stale_jobs(db,30),1);self.assertEqual(db.get(Recording,r.id).status,RecordingStatus.FAILED)
 
     def test_adapter_config_is_unique_and_isolated(self):
         engine=LegacySubprocessEngine(self.settings); source=self.add_recording();one=engine._job_config(source,self.settings.data_dir/'jobs'/'one');two=engine._job_config(source,self.settings.data_dir/'jobs'/'two');self.assertNotEqual(one,two);content=one.read_text();self.assertIn((self.settings.data_dir/'jobs'/'one'/'legacy_output').as_posix(),content);self.assertIn((self.settings.data_dir/'jobs'/'one'/'legacy_work').as_posix(),content);self.assertEqual((self.legacy/'config.yaml').read_text(),'input_file: "old.ts"\noutput_root: "old-output"\nwork_root: "old-work"\n')

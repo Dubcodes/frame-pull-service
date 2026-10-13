@@ -10,7 +10,7 @@ from frame_pull_service.db import create_db_engine, init_db, make_session_factor
 from frame_pull_service.models import Job, JobStatus, Recording, RecordingStatus
 from frame_pull_service.services.legacy_engine import LegacyResult, LegacySubprocessEngine
 from frame_pull_service.services.operations import seed_settings, update_settings
-from frame_pull_service.services.queue import claim_next_job, queue_recording
+from frame_pull_service.services.queue import claim_next_job, queue_recording, release_job
 from frame_pull_service.services.worker import Worker
 from scripts.qualify_one_chunk_e2e import ROOT, assert_single_input, validate_request
 
@@ -89,6 +89,7 @@ class OneChunkQualificationTests(unittest.TestCase):
             session.commit()
             self.assertIsNone(claim_next_job(session))
             update_settings(session, {"processing_paused": False})
+            release_job(session, job.id)
             claimed = claim_next_job(session)
             job_id = claimed.id
         return settings, engine, sessions, source, job_id

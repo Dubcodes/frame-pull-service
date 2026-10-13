@@ -30,7 +30,7 @@ from frame_pull_service.services.context import resolve_interview_context
 from frame_pull_service.services.discovery import discover_recordings
 from frame_pull_service.services.legacy_engine import LegacySubprocessEngine
 from frame_pull_service.services.operations import seed_settings, update_settings
-from frame_pull_service.services.queue import claim_next_job, queue_recording
+from frame_pull_service.services.queue import claim_next_job, queue_recording, release_job
 from frame_pull_service.services.worker import Worker
 
 
@@ -255,6 +255,7 @@ def run(source: Path) -> tuple[int, Path, dict]:
             report["recording"] = {"id": recording.id, "filename": recording.filename, "status_before_queue": "ready", "size_bytes": recording.size_bytes}
             report["job"] = {"id": job.id, "recording_id": recording.id, "status_before_run": job.status.value, "paused_claim_is_none": True}
             update_settings(session, {"processing_paused": False})
+            release_job(session, job.id)
             claimed = claim_next_job(session, max_concurrent=1)
             if claimed is None or claimed.id != job.id:
                 raise RuntimeError("Failed to claim the one explicit isolated job.")

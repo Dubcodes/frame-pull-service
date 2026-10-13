@@ -19,7 +19,7 @@ from .schemas import CaptureFrameRequest, RejectRequest, ReviewPatch, SelectCand
 from .services.discovery import discover_recordings
 from .services.cleanup import cleanup_plan
 from .services.paths import artifact_path
-from .services.queue import cancel_queued, queue_recording, queue_selected
+from .services.queue import cancel_queued, queue_recording, queue_selected, set_jobs_released
 from .services.review import approve, capture_frame, reject, save_review, select_candidate, refresh_manifest
 from .services.worker import Worker
 from .services.operations import get_value, seed_settings, settings_view, update_settings
@@ -103,10 +103,14 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
         with state.sessions() as session:
             active = session.execute(select(Job).where(Job.status == JobStatus.PROCESSING)).scalars().all()
             paused = bool(get_value(session, "processing_paused", False))
+            held = session.query(Job).filter(Job.status == JobStatus.QUEUED, Job.released_for_processing.is_(False)).count()
+            released = session.query(Job).filter(Job.status == JobStatus.QUEUED, Job.released_for_processing.is_(True)).count()
             return {"version": __version__, "database": "ok", "watcher_active": state.watcher_task is not None,
                     "worker_active": bool(state.worker and state.worker.active), "processing_paused": paused,
                     "current_job": active[0].id if active else None, "active_jobs": [{"id": item.id, "stage": item.progress_stage, "percent": item.progress_percent} for item in active],
-                    "queue_depth": session.query(Job).filter(Job.status == JobStatus.QUEUED).count(),
+                    "queue_depth": held + released, "held_jobs": held, "released_jobs": released,
+                    "completed_jobs": session.query(Job).filter(Job.status == JobStatus.COMPLETE).count(),
+                    "failed_jobs": session.query(Job).filter(Job.status.in_([JobStatus.FAILED, JobStatus.STALE])).count(),
                     "max_concurrent_recordings": get_value(session, "max_concurrent_recordings", 1),
                     "ffmpeg_available": True, "ffprobe_available": True, "legacy_engine_available": state.settings.legacy_python.exists(),
                     "recorder": state.recorder.refresh(session).public()}
@@ -142,7 +146,7 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
         with state.sessions() as session:
             item = session.get(Recording, recording_id)
             if not item: raise HTTPException(404, "recording not found")
-            data = serialize_recording(item, state.settings.broadcast_timezone); data["jobs"] = [{"id": job.id, "status": job.status.value, "stage": job.progress_stage, "percent": job.progress_percent, "error": job.error_summary} for job in item.jobs]; return data
+            data = serialize_recording(item, state.settings.broadcast_timezone); data["jobs"] = [{"id": job.id, "status": job.status.value, "released_for_processing": job.released_for_processing, "stage": job.progress_stage, "percent": job.progress_percent, "error": job.error_summary} for job in item.jobs]; return data
 
     @app.post("/api/recordings/discover")
     def discover() -> dict:
@@ -153,7 +157,7 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
         with state.sessions() as session:
             item = session.get(Recording, recording_id)
             if not item: raise HTTPException(404, "recording not found")
-            job = queue_recording(session, item); session.commit(); return {"job_id": job.id, "status": job.status.value}
+            job = queue_recording(session, item); session.commit(); return {"job_id": job.id, "status": job.status.value, "released_for_processing": job.released_for_processing}
 
     @app.post("/api/recordings/{recording_id}/reprocess")
     def reprocess(recording_id: int) -> dict:
@@ -168,6 +172,35 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     def bulk_cancel(body: dict) -> dict:
         with state.sessions() as session:
             return cancel_queued(session, [int(item) for item in body.get("recording_ids", [])])
+
+    def change_job_release(body: dict, released: bool) -> dict:
+        try:
+            job_ids = [int(item) for item in body.get("job_ids", [])]
+        except (TypeError, ValueError):
+            raise HTTPException(422, "job_ids must contain integer job ids")
+        with state.sessions() as session:
+            try:
+                return set_jobs_released(session, job_ids, released)
+            except LookupError as exc:
+                raise HTTPException(404, str(exc))
+            except ValueError as exc:
+                raise HTTPException(409, str(exc))
+
+    @app.post("/api/jobs/bulk/release")
+    def bulk_release_jobs(body: dict) -> dict:
+        return change_job_release(body, True)
+
+    @app.post("/api/jobs/bulk/hold")
+    def bulk_hold_jobs(body: dict) -> dict:
+        return change_job_release(body, False)
+
+    @app.post("/api/jobs/{job_id}/release")
+    def release_one_job(job_id: int) -> dict:
+        return change_job_release({"job_ids": [job_id]}, True)
+
+    @app.post("/api/jobs/{job_id}/hold")
+    def hold_one_job(job_id: int) -> dict:
+        return change_job_release({"job_ids": [job_id]}, False)
 
     @app.get("/api/operations/settings")
     def operation_settings() -> dict:
@@ -188,7 +221,11 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
 
     @app.post("/api/operations/resume")
     def resume_processing() -> dict:
-        with state.sessions() as session: return {"state": "active", "settings": update_settings(session, {"processing_paused": False})}
+        with state.sessions() as session:
+            released = session.query(Job).filter(Job.status == JobStatus.QUEUED, Job.released_for_processing.is_(True)).count()
+            return {"state": "active", "released_jobs_eligible": released,
+                    "message": "Processing resumed; only explicitly released queued jobs are eligible.",
+                    "settings": update_settings(session, {"processing_paused": False})}
 
     @app.get("/api/race-days")
     def race_days() -> list[dict]:

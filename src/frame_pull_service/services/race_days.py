@@ -65,7 +65,10 @@ def race_day_summary(session: Session, race_day: RaceDay) -> dict:
     interviews = pending = approved = 0
     for record in records:
         for job in record.jobs:
-            job_counts[job.status.value] += 1
+            if job.status == JobStatus.QUEUED:
+                job_counts["released" if job.released_for_processing else "held"] += 1
+            else:
+                job_counts[job.status.value] += 1
         count = session.scalar(select(func.count()).select_from(Interview).where(Interview.recording_id == record.id)) or 0
         interviews += count
         pending += session.scalar(select(func.count()).select_from(Interview).where(Interview.recording_id == record.id, Interview.review_status == ReviewStatus.PENDING)) or 0
@@ -80,6 +83,15 @@ def race_day_summary(session: Session, race_day: RaceDay) -> dict:
         "active_chunk": Path(recorder_session.active_path).name if recorder_session.active_path else None,
         "chunk_sequence": recorder_session.active_chunk_sequence, "started_at": iso_broadcast(recorder_session.started_at),
         "planned_end_at": iso_broadcast(recorder_session.planned_end_at), "error": recorder_session.error_summary}
+    def latest_job(recording: Recording) -> dict | None:
+        job = max(recording.jobs, key=lambda item: item.id, default=None)
+        if not job:
+            return None
+        return {"id": job.id, "status": job.status.value,
+                "released_for_processing": job.released_for_processing,
+                "queued_at": iso_broadcast(job.queued_at), "started_at": iso_broadcast(job.started_at),
+                "finished_at": iso_broadcast(job.finished_at)}
+
     return {"id": race_day.id, "date": race_day.race_date.isoformat(), "label": race_day.label or race_day.race_date.isoformat(),
             "meetings": meetings, "calendar_status": calendar_status, "race_count": len(races),
             "first_race": iso_broadcast(min(race_times)) if race_times else None, "last_race": iso_broadcast(max(race_times)) if race_times else None,
@@ -87,7 +99,8 @@ def race_day_summary(session: Session, race_day: RaceDay) -> dict:
             "files": len(records), "interviews": interviews, "pending": pending, "approved": approved,
             "jobs": dict(job_counts), "recordings": [{"id": r.id, "filename": r.filename, "status": r.status.value,
               "started_at": iso_broadcast(r.recording_started_at), "stopped_at": iso_broadcast(r.recording_stopped_at),
-              "duration_seconds": r.duration_seconds} for r in records], "recorder": recorder}
+              "duration_seconds": r.duration_seconds,
+              "latest_job": latest_job(r)} for r in records], "recorder": recorder}
 
 
 def list_race_days(session: Session) -> list[dict]:

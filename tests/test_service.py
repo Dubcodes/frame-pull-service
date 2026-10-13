@@ -15,7 +15,7 @@ from frame_pull_service.services.legacy_engine import LegacySubprocessEngine
 from frame_pull_service.services.media import clip_bounds
 from frame_pull_service.services.normalizer import interview_key
 from frame_pull_service.services.paths import contained_path
-from frame_pull_service.services.queue import claim_next_job, queue_recording, recover_stale_jobs
+from frame_pull_service.services.queue import claim_next_job, queue_recording, recover_stale_jobs, release_job
 from frame_pull_service.services.cleanup import cleanup_plan
 
 
@@ -57,7 +57,7 @@ class ServiceTests(unittest.TestCase):
         with self.sessions() as session:
             record = Recording(filename="manual.ts", source_path="x", fingerprint="f", size_bytes=20, mtime_epoch=0, status=RecordingStatus.READY)
             session.add(record); session.flush(); one=queue_recording(session, record); two=queue_recording(session, record); self.assertEqual(one.id, two.id); session.commit()
-            claimed=claim_next_job(session); self.assertEqual(claimed.status, JobStatus.PROCESSING)
+            release_job(session, one.id); claimed=claim_next_job(session); self.assertEqual(claimed.status, JobStatus.PROCESSING)
             claimed.heartbeat_at=datetime(2000,1,1); session.commit(); self.assertEqual(recover_stale_jobs(session, 1), 1)
 
     def test_legacy_adapter_isolated_and_single_input(self):

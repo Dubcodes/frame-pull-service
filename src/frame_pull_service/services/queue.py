@@ -13,7 +13,7 @@ def queue_recording(session: Session, recording: Recording) -> Job:
     existing = session.execute(select(Job).where(Job.recording_id == recording.id, Job.status.in_([JobStatus.QUEUED, JobStatus.PROCESSING]))).scalar_one_or_none()
     if existing:
         return existing
-    job = Job(recording_id=recording.id, status=JobStatus.QUEUED)
+    job = Job(recording_id=recording.id, status=JobStatus.QUEUED, released_for_processing=False)
     session.add(job)
     recording.status = RecordingStatus.QUEUED
     session.flush()
@@ -31,11 +31,18 @@ def claim_next_job(session: Session, max_concurrent: int = 1, paused: bool | Non
         active = session.scalar(select(func.count()).select_from(Job).where(Job.status == JobStatus.PROCESSING)) or 0
         if active >= max(1, max_concurrent):
             return None
-        job = session.execute(select(Job).where(Job.status == JobStatus.QUEUED).order_by(Job.queued_at, Job.id)).scalars().first()
+        job = session.execute(select(Job).where(
+            Job.status == JobStatus.QUEUED,
+            Job.released_for_processing.is_(True),
+        ).order_by(Job.queued_at, Job.id)).scalars().first()
         if not job:
             return None
         now = datetime.utcnow()
-        claimed = session.execute(update(Job).where(Job.id == job.id, Job.status == JobStatus.QUEUED).values(
+        claimed = session.execute(update(Job).where(
+            Job.id == job.id,
+            Job.status == JobStatus.QUEUED,
+            Job.released_for_processing.is_(True),
+        ).values(
             status=JobStatus.PROCESSING, started_at=now, heartbeat_at=now, attempt_count=Job.attempt_count + 1, progress_stage="starting"))
         if not claimed.rowcount:
             session.rollback()
@@ -44,6 +51,48 @@ def claim_next_job(session: Session, max_concurrent: int = 1, paused: bool | Non
         session.commit()
         return session.get(Job, job.id)
     return None
+
+
+def set_jobs_released(session: Session, job_ids: list[int], released: bool) -> dict:
+    """Atomically release or hold an explicit, bounded set of queued jobs."""
+    unique_ids = list(dict.fromkeys(job_ids))
+    if not unique_ids:
+        raise ValueError("job_ids must contain at least one explicit job id")
+    if len(unique_ids) > 200:
+        raise ValueError("at most 200 explicit job ids may be changed at once")
+
+    jobs = session.execute(select(Job).where(Job.id.in_(unique_ids))).scalars().all()
+    found = {job.id: job for job in jobs}
+    missing = [job_id for job_id in unique_ids if job_id not in found]
+    invalid = [job.id for job in jobs if job.status != JobStatus.QUEUED]
+    if missing:
+        raise LookupError(f"job ids not found: {missing}")
+    if invalid:
+        raise ValueError(f"only queued jobs can be changed; invalid job ids: {sorted(invalid)}")
+
+    changed, unchanged = [], []
+    for job_id in unique_ids:
+        job = found[job_id]
+        if job.released_for_processing == released:
+            unchanged.append(job.id)
+        else:
+            job.released_for_processing = released
+            changed.append(job.id)
+    session.commit()
+    return {
+        "state": "released" if released else "held",
+        "changed": changed,
+        "unchanged": unchanged,
+        "job_ids": unique_ids,
+    }
+
+
+def release_job(session: Session, job_id: int) -> dict:
+    return set_jobs_released(session, [job_id], True)
+
+
+def hold_job(session: Session, job_id: int) -> dict:
+    return set_jobs_released(session, [job_id], False)
 
 
 def queue_selected(session: Session, recording_ids: list[int], reprocess: bool = False) -> dict:
@@ -70,6 +119,7 @@ def cancel_queued(session: Session, recording_ids: list[int]) -> dict:
                 protected.append(job.id)
             elif job.status == JobStatus.QUEUED:
                 job.status, job.finished_at, job.progress_stage = JobStatus.FAILED, datetime.utcnow(), "cancelled_before_start"
+                job.released_for_processing = False
                 job.error_summary = "Cancelled before processing by operator."
                 recording = session.get(Recording, recording_id)
                 if recording:

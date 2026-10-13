@@ -15,7 +15,7 @@ from frame_pull_service.main import create_app
 from frame_pull_service.models import Candidate, Interview, InterviewRevision, Job, JobStatus, ProcessingRun, RaceDay, Recording, RecordingStatus, ReviewEvent, ReviewStatus
 from frame_pull_service.services.groups import list_groups
 from frame_pull_service.services.operations import get_value, seed_settings, update_settings
-from frame_pull_service.services.queue import cancel_queued, claim_next_job, queue_selected
+from frame_pull_service.services.queue import cancel_queued, claim_next_job, queue_selected, set_jobs_released
 from frame_pull_service.services.race_days import attach_recording_to_race_day, parse_recording_filename
 from frame_pull_service.services.source_lifecycle import deletion_eligibility
 
@@ -50,14 +50,15 @@ class OperationalV2Tests(unittest.TestCase):
     def test_pause_and_concurrency_claim_distinct_jobs(self):
         first=self.record();second=self.record("trackside_20260921-0850_022.ts")
         with self.sessions() as session:
-            queue_selected(session,[first,second]);one=claim_next_job(session,max_concurrent=2,paused=False);two=claim_next_job(session,max_concurrent=2,paused=False);self.assertNotEqual(one.id,two.id);self.assertIsNone(claim_next_job(session,max_concurrent=2,paused=False))
+            queued=queue_selected(session,[first,second]);set_jobs_released(session,queued["queued"],True);one=claim_next_job(session,max_concurrent=2,paused=False);two=claim_next_job(session,max_concurrent=2,paused=False);self.assertNotEqual(one.id,two.id);self.assertIsNone(claim_next_job(session,max_concurrent=2,paused=False))
         third=self.record("trackside_20260921-0950_023.ts")
         with self.sessions() as session:
             queue_selected(session,[third]);self.assertIsNone(claim_next_job(session,max_concurrent=4,paused=True));self.assertEqual(session.get(Recording,third).status,RecordingStatus.QUEUED)
 
     def test_simultaneous_separate_sessions_never_claim_the_same_job(self):
         first=self.record(); second=self.record("trackside_20260921-0850_022.ts")
-        with self.sessions() as session: queue_selected(session,[first,second])
+        with self.sessions() as session:
+            queued=queue_selected(session,[first,second]);set_jobs_released(session,queued["queued"],True)
         barrier=threading.Barrier(2); claimed=[]; errors=[]
         def claim():
             try:
@@ -73,7 +74,7 @@ class OperationalV2Tests(unittest.TestCase):
     def test_bulk_queue_is_idempotent_and_cancel_never_cancels_processing(self):
         queued=self.record();active=self.record("trackside_20260921-0850_022.ts")
         with self.sessions() as session:
-            first=queue_selected(session,[queued,active]);second=queue_selected(session,[queued]);self.assertEqual(len(first["queued"]),2);self.assertEqual(len(second["existing"]),1);job=claim_next_job(session,max_concurrent=2,paused=False);result=cancel_queued(session,[queued,active]);self.assertIn(job.id,result["protected_processing"]);self.assertEqual(len(result["cancelled"]),1)
+            first=queue_selected(session,[queued,active]);second=queue_selected(session,[queued]);self.assertEqual(len(first["queued"]),2);self.assertEqual(len(second["existing"]),1);set_jobs_released(session,[first["queued"][1]],True);job=claim_next_job(session,max_concurrent=2,paused=False);result=cancel_queued(session,[queued,active]);self.assertIn(job.id,result["protected_processing"]);self.assertEqual(len(result["cancelled"]),1)
 
     def test_groups_only_trusted_or_manual_identity(self):
         rid=self.record()

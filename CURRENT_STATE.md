@@ -1,5 +1,27 @@
 # Current State
 
+## V2.8 backlog hold and selected release checkpoint
+
+- Queue insertion and processing eligibility are now separate durable states.
+  All newly queued manual, bulk, reprocess, retry, autoqueue, and closed-chunk
+  jobs default held. A queued job must have
+  `released_for_processing=true` **and** global processing must be resumed
+  before the authoritative atomic claim path can select it.
+- Release and hold are idempotent service operations with single-job and
+  bounded explicit-ID bulk APIs. Only queued jobs may change release state;
+  there is no unguarded release-all endpoint. The dashboard and Race Day rows
+  distinguish Held, Released, Processing, Complete, and Failed, and “Resume
+  released jobs” states exactly how many jobs can become eligible.
+- The additive SQLite migration uses `BOOLEAN NOT NULL DEFAULT 0`. Production
+  remains at 93 recordings and 94 jobs (81 queued, 12 complete, 1 failed), with
+  all 81 queued jobs held, 0 released, and 0 active. Processing is paused;
+  autoqueue, automatic Race Day mode, and source deletion remain off. No
+  production job was claimed or processed.
+- Isolated qualification covers old-schema migration, the pause/release claim
+  matrix, hold-after-release, deterministic and simultaneous claims, explicit
+  bulk IDs, invalid statuses, API counts and wording, autoqueue, reprocess, and
+  retry-held defaults. **REAL i5 PERFORMANCE BENCHMARK NOT YET RUN.**
+
 ## V2.7 known-positive evidence checkpoint
 
 - A preserved copy of the known-positive historical source

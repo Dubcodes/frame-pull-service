@@ -48,6 +48,9 @@ def init_db(engine: Engine) -> None:
             "stop_after_chunk": "BOOLEAN DEFAULT 0", "error_summary": "TEXT", "log_path": "TEXT",
             "exit_code": "INTEGER", "recovery_checked_at": "DATETIME",
         },
+        # Existing queued jobs must remain inert after this migration. SQLite
+        # applies the DEFAULT to every historical row when the column is added.
+        "jobs": {"released_for_processing": "BOOLEAN NOT NULL DEFAULT 0"},
     }
     inspector = inspect(engine)
     with engine.begin() as connection:

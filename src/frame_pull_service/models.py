@@ -153,6 +153,7 @@ class Job(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     recording_id: Mapped[int] = mapped_column(ForeignKey("recordings.id"), index=True)
     status: Mapped[JobStatus] = mapped_column(Enum(JobStatus), default=JobStatus.QUEUED, index=True)
+    released_for_processing: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     queued_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
