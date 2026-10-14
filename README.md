@@ -92,6 +92,27 @@ recording relationships, or statuses. Production remains paused with 81 held,
 deletion remain off. Retrying or reprocessing deliberately returns to held and
 requires a fresh release decision.
 
+### Database startup boundary (V2.8.1)
+
+Importing `frame_pull_service.main` and calling `create_app()` now construct
+definitions and service objects only. They do not create runtime directories,
+open or migrate the configured database, or change SQLite journal mode.
+Runtime directory creation, WAL setup, schema creation/additive migration,
+settings seeding, recorder recovery, and discovery begin in that order only
+when the FastAPI lifespan actually starts. The worker and baseline utilities
+initialize their databases explicitly rather than depending on a web-module
+import.
+
+`pending_schema_additions(engine)` provides a read-only inspection of the
+project's known additive column upgrades. It reports only missing columns on
+existing tables and performs no `CREATE` or `ALTER`; after `init_db(engine)`
+the plan is empty. Production currently has an empty plan and remains at 81
+held, 0 released, and 0 active jobs with processing paused. The V2.8 historical
+limitation remains: the exact original pre-migration production digest was not
+captured before that additive upgrade. The evidence available is the
+false-default `ALTER`, isolated legacy-row preservation, the unchanged expected
+81 queued relationships, and the absence of worker/detector execution.
+
 People is the default review mode. It groups only manually resolved or trusted
 identities within a Race Day; tentative OCR and unknowns remain individual
 interviews. A group retains the independent interview evidence and may select

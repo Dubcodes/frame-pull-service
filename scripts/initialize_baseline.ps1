@@ -1,2 +1,2 @@
 $root = Split-Path -Parent $PSScriptRoot; Set-Location $root
-& .\.venv\Scripts\python.exe -c "from frame_pull_service.main import app; from frame_pull_service.services.discovery import discover_recordings; s=app.state.service; session=s.sessions(); print(discover_recordings(session,s.settings)); session.close()"
+& .\.venv\Scripts\python.exe -c "from frame_pull_service.config import get_settings; from frame_pull_service.db import create_db_engine, init_db, make_session_factory; from frame_pull_service.services.discovery import discover_recordings; s=get_settings(); s.ensure_data_dirs(); e=create_db_engine(s); init_db(e); session=make_session_factory(e)(); print(discover_recordings(session,s)); session.close(); e.dispose()"

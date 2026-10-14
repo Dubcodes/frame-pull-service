@@ -1,5 +1,32 @@
 # Current State
 
+## V2.8.1 database startup safety checkpoint
+
+- `frame_pull_service.main` import and `create_app()` construction no longer
+  create runtime directories, connect to/migrate the configured schema, or
+  change SQLite journal mode. Actual FastAPI lifespan startup explicitly runs
+  directory creation, WAL/schema initialization, settings seeding, recorder
+  recovery, and discovery before starting a watcher or optional worker.
+- A read-only `pending_schema_additions()` inspection reports the controlled
+  missing additive columns without modifying schema. Fresh-import,
+  app-construction, legacy-schema lifespan migration, plan-before/after, and
+  row-preservation tests use temporary SQLite databases. Non-web initialization
+  utilities now call `init_db()` explicitly.
+- The production additive plan is empty. A fresh import-only subprocess left
+  the complete production semantic snapshot unchanged, including queued job
+  relationship digest
+  `c7cd9cf57497aa02a4e42f5eb8d9b3dad94c6d2fe9d66c44b314715dccdfbd32`.
+  Normal no-worker API startup returned healthy with 81 held, 0 released, and
+  0 active. Its normal discovery pass registered 11 new stable source files as
+  `READY` (recordings 93 -> 104); autoqueue was off, so it created no jobs and
+  claimed or processed nothing.
+- V2.8's historical audit limitation is unchanged and not reconstructed: the
+  exact production pre-migration digest was not captured. Available evidence
+  remains additive `DEFAULT 0`, isolated legacy-row preservation, the expected
+  unchanged 81 queued relationships, and no worker/detector execution.
+- Processing remains paused; autoqueue, automatic Race Day mode, and source
+  deletion remain off. **REAL i5 PERFORMANCE BENCHMARK NOT YET RUN.**
+
 ## V2.8 backlog hold and selected release checkpoint
 
 - Queue insertion and processing eligibility are now separate durable states.

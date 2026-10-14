@@ -34,7 +34,8 @@ from .services.recorder import FFmpegRecorder
 
 class ServiceState:
     def __init__(self, settings: Settings, worker_enabled: bool):
-        settings.ensure_data_dirs(); self.settings = settings; self.engine = create_db_engine(settings); init_db(self.engine)
+        self.settings = settings
+        self.engine = create_db_engine(settings)
         self.sessions = make_session_factory(self.engine)
         self.worker = Worker(self.sessions, settings) if worker_enabled else None
         self.recorder = FFmpegRecorder(settings)
@@ -71,6 +72,10 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Importing this module or constructing an app must not touch runtime
+        # directories or mutate schema. Initialization begins only here.
+        state.settings.ensure_data_dirs()
+        init_db(state.engine)
         with state.sessions() as session:
             seed_settings(session, state.settings); backfill_race_days(session); state.recorder.recover(session); discover_recordings(session, state.settings)
         if state.worker: state.worker.start()
