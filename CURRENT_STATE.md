@@ -1,5 +1,43 @@
 # Current State
 
+## V2.9 Linux/Docker production foundation
+
+- Production now targets one Linux image used by `frame-pull-web` and
+  `frame-pull-worker`. Compose gives both local `/data`, mounts `/legacy`
+  read-only, mounts `/recordings` read/write for web/recorder and read-only for
+  worker, and starts worker only after the web healthcheck succeeds.
+- Application defaults and environment configuration are POSIX-safe. The
+  legacy Python executable is explicit rather than derived from
+  `.venv\\Scripts\\python.exe`. Windows development remains supported through
+  local `.env` values and the existing PowerShell convenience scripts.
+- The frozen detector was audited read-only at `J:\frame-pull`. Its requirements
+  are OpenCV, NumPy, PyYAML, pytesseract, Pillow, FFmpeg/FFprobe, Tesseract, and
+  ordinary font/runtime libraries. It does not import Torch. Its current config
+  contains a Windows Tesseract executable, Windows examples path, and CUDA
+  decode request; Docker replaces these only in each service-owned job config.
+- SQLite remains in WAL mode with foreign keys and a five-second busy timeout.
+  The supported topology is web plus one worker on the same Docker host and
+  reliable local `/data`. Live SQLite on SMB/NFS/network storage is explicitly
+  unsupported. Startup migration remains outside import/app construction and
+  is performed explicitly by each service; Compose serializes first startup by
+  waiting for healthy web before worker.
+- Recorder sessions now persist a runtime owner ID alongside FFmpeg PID. A new
+  runtime marks any prior-owner active session interrupted without probing or
+  signalling its numeric PID, preserves all chunks, and never auto-restarts.
+  Web SIGTERM requests a graceful `q` only from its own child and retains a
+  final partial chunk if grace expires. Worker SIGTERM stops claims first and
+  waits for active job threads within the external container stop grace.
+- Docker was not installed on the V2.9 development machine. No image build,
+  container smoke, Linux detector run, or target-volume permission test was
+  claimed. These are mandatory V2.10 target-server checks before one zero-job
+  production recording may be queued held, explicitly released, and processed.
+- No production recording was queued, released, claimed, or processed in V2.9.
+  The last observed reference remains 104 recordings and 94 jobs: 81 queued
+  all held, 0 released, 0 active, 12 complete, and 1 failed, with processing
+  paused and autoqueue, automatic Race Day mode, and source deletion off.
+  A read-only plan reports only `recording_sessions.recorder_owner_id` pending;
+  the Windows production DB was deliberately not migrated during this audit.
+
 ## V2.8.1 database startup safety checkpoint
 
 - `frame_pull_service.main` import and `create_app()` construction no longer

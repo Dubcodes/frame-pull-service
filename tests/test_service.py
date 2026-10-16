@@ -22,7 +22,8 @@ from frame_pull_service.services.cleanup import cleanup_plan
 class ServiceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); root = Path(self.temp.name); self.source = root / "source"; self.source.mkdir()
-        self.settings = Settings(source_dir=self.source, data_dir=root / "data", database_url=f"sqlite:///{(root/'service.db').as_posix()}", min_input_bytes=10, stable_for_seconds=0)
+        self.legacy = root / "legacy"; self.legacy.mkdir(); (self.legacy / "config.yaml").write_text("input_file: old\noutput_root: old\nwork_root: old\n")
+        self.settings = Settings(source_dir=self.source, legacy_engine_root=self.legacy, data_dir=root / "data", database_url=f"sqlite:///{(root/'service.db').as_posix()}", min_input_bytes=10, stable_for_seconds=0)
         self.engine = create_db_engine(self.settings); init_db(self.engine); self.sessions = make_session_factory(self.engine)
 
     def tearDown(self):
@@ -69,6 +70,7 @@ class ServiceTests(unittest.TestCase):
         with self.engine.connect() as conn:
             self.assertEqual(conn.execute(text("PRAGMA foreign_keys")).scalar(), 1)
             self.assertEqual(conn.execute(text("PRAGMA journal_mode")).scalar().lower(), "wal")
+            self.assertEqual(conn.execute(text("PRAGMA busy_timeout")).scalar(), 5000)
 
     def test_cleanup_plan_is_dry_run_and_excludes_sources(self):
         source = self.source / "retained.ts"; source.write_bytes(b"x" * 20)

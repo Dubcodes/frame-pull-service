@@ -1,0 +1,7 @@
+# Runtime imports audited from the frozen detector at J:\frame-pull.
+# The detector source itself is not part of this repository or image.
+opencv-python-headless>=4.9,<5
+numpy>=1.26,<3
+PyYAML>=6.0.1,<7
+pytesseract>=0.3.10,<1
+Pillow>=10,<12

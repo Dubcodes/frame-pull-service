@@ -1,10 +1,74 @@
 # Frame Pull Service
 
-Review-first local service for Trackside interview evidence packages. The frozen
-legacy engine at `J:\frame-pull` remains a read-only detector dependency; this
-service owns its own database, job work, clips, portraits, logs, and review API.
+Review-first service for Trackside interview evidence packages. Linux with
+Docker Compose is the production target. Windows remains the development and
+historical-qualification environment. The frozen legacy engine is a read-only,
+separately mounted detector dependency; this public repository owns only its
+adapter, database, job work, clips, portraits, logs, and review API.
 
-## Install and run
+## Linux Docker deployment
+
+The production image is shared by two services in `compose.yaml`:
+
+- `frame-pull-web` runs Uvicorn, discovery, the recorder, race-day
+  orchestration, and the review UI/API.
+- `frame-pull-worker` runs `python -m frame_pull_service.worker_entry` and is
+  the only normal production job consumer.
+
+Use a local host layout such as:
+
+```text
+/srv/frame-pull/
+  data/          # local Linux filesystem; SQLite and service artifacts
+  recordings/    # source media and recorder chunks
+  legacy/        # frozen detector source, mounted read-only
+  .env           # secrets and host-specific settings; never commit
+```
+
+Copy `.env.example` to `/srv/frame-pull/.env`, set the server-local paths and
+secrets (including `FRAME_PULL_ENV_FILE`), then run
+`docker compose --env-file /srv/frame-pull/.env up -d
+--build`. Ensure UID 10001 can write `data/` and `recordings/`. The web service
+mounts recordings read/write because it creates chunks; the worker mounts them
+read-only. Both mount `data/` read/write and `legacy/` read-only.
+
+**Keep `/data/frame_pull.db` on reliable local Linux storage. Do not place it
+on SMB, NFS, or another network filesystem.** SQLite WAL and the existing
+short claim transactions support the web and one worker as separate processes
+on the same Docker host. Back up all of `/data`, including the database, WAL
+state when present, job directories, evidence, clips, and approved portraits.
+Recordings are separate source media and need their own retention/backup plan.
+
+The image contains Python 3.12, FFmpeg/FFprobe, Tesseract, fonts, and the
+audited detector Python dependencies. It does not contain detector source,
+media, runtime data, `.env`, HLS endpoints, or tokens. The frozen source is
+mounted at `/legacy`; its Windows Tesseract and CUDA config values are replaced
+only in each service-owned job config. The frozen file itself is never edited.
+`FRAME_PULL_LEGACY_PYTHON=/usr/local/bin/python` selects the image runtime
+explicitly. No Torch import or dependency exists in the frozen detector.
+
+The web healthcheck calls `/api/health`; it reads local state only and does not
+start the recorder, claim work, or refresh external services. Image import and
+app construction do not initialize the database. Actual web/worker startup
+calls `init_db()` explicitly; Compose waits for healthy web initialization
+before starting the worker. Current-schema initialization remains idempotent.
+
+On container restart, a recorder session's persisted PID is paired with a
+random runtime owner ID. A new container marks a previous owner's session
+`interrupted` without checking or signalling that numeric PID. Existing chunks
+remain on disk and re-enter normal stability discovery; recording is not
+automatically restarted. During SIGTERM, web asks only its own FFmpeg child to
+quit cleanly and waits briefly, never escalating to an unowned PID or deleting
+a partial chunk. The worker stops claiming immediately and keeps its process
+alive for already-claimed work during Compose's ten-minute stop grace; Docker
+may terminate the container after that external bound, and stale-job recovery
+then applies on the next start.
+
+Docker was not available on the V2.9 Windows development host, so the files and
+tests are qualified statically but the image, detector, and target mounts still
+require V2.10 execution on the Linux server before any real job is released.
+
+## Windows development / historical qualification
 
 ```powershell
 cd J:\projects\frame-pull-service
@@ -14,7 +78,10 @@ cd J:\projects\frame-pull-service
 ```
 
 Open `http://127.0.0.1:8094`. Use `run_service.ps1` and `run_worker.ps1` in
-separate terminals when preferred.
+separate terminals when preferred. A Windows `.env` must provide the historical
+`J:\...` source, data, and legacy paths plus an explicit
+`FRAME_PULL_LEGACY_PYTHON=...\.venv\Scripts\python.exe`; these are no longer
+application defaults.
 
 ## First-run safety
 
@@ -180,9 +247,10 @@ space. The output path belongs to configuration; browser requests cannot choose
 an arbitrary path or executable.
 
 Every recorder session persists its race-day/manual origin, planned end, PID,
+runtime owner identity,
 active chunk, stop request, log path, exit code, and error state. On an API
-restart the service never kills a remembered PID: an unproven live process is
-marked `uncertain`, while a missing PID is marked failed. FFmpeg crashes are
+restart the service never probes or kills a remembered PID from another
+runtime: the session is marked `interrupted`. FFmpeg crashes are
 recorded and do not auto-retry indefinitely. The active chunk sequence is a
 per-session monotonic counter; the two-digit filename suffix remains the
 chunk's wall-clock second and is not treated as ordering metadata. Terminal

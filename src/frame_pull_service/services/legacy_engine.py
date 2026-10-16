@@ -37,6 +37,12 @@ class LegacySubprocessEngine:
             "output_root": output_dir.as_posix(),
             "work_root": work_dir.as_posix(),
         }
+        optional_replacements = {
+            "tesseract_cmd": self.settings.legacy_tesseract_cmd,
+            "ffmpeg_hwaccel": self.settings.legacy_ffmpeg_hwaccel,
+            "examples_dir": self.settings.legacy_examples_dir.as_posix() if self.settings.legacy_examples_dir else None,
+        }
+        replacements.update({key: value for key, value in optional_replacements.items() if value is not None})
         for key, value in replacements.items():
             pattern = rf"(?m)^(\s*{re.escape(key)}\s*:\s*).*$"
             if re.search(pattern, text):

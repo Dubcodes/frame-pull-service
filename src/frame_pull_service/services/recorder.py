@@ -1,12 +1,12 @@
 """Durable FFmpeg recorder boundary for normal Frame Pull source chunks."""
 from __future__ import annotations
 
-import os
 import re
 import shlex
 import shutil
 import subprocess
 import threading
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -81,12 +81,19 @@ class FFmpegRecorder(RecorderAdapter):
     """One long-lived FFmpeg segmenter, writing parser-compatible Trackside chunks."""
     name = "ffmpeg"
 
-    def __init__(self, settings: Settings, popen=subprocess.Popen, disk_usage=shutil.disk_usage):
+    def __init__(self, settings: Settings, popen=subprocess.Popen, disk_usage=shutil.disk_usage,
+                 runtime_instance_id: str | None = None):
         self.settings = settings
         self._popen = popen
         self._disk_usage = disk_usage
         self._children: dict[int, subprocess.Popen] = {}
         self._log_threads: dict[int, threading.Thread] = {}
+        self.runtime_instance_id = runtime_instance_id or uuid.uuid4().hex
+
+    def _owned_process(self, row: RecordingSession) -> subprocess.Popen | None:
+        if row.recorder_owner_id != self.runtime_instance_id or row.ffmpeg_pid is None:
+            return None
+        return self._children.get(row.ffmpeg_pid)
 
     def _active_session(self, session: Session) -> RecordingSession | None:
         return session.execute(
@@ -271,7 +278,8 @@ class FFmpegRecorder(RecorderAdapter):
         started = datetime.now()
         row = RecordingSession(race_day_id=getattr(race_day, "id", None), status="starting", adapter_name=self.name,
                                started_at=started, planned_start_at=started, planned_end_at=planned_end,
-                               manual=manual, log_path=str(self.settings.data_dir / "logs" / f"recorder_{started:%Y%m%d_%H%M%S}.log"))
+                               manual=manual, recorder_owner_id=self.runtime_instance_id,
+                               log_path=str(self.settings.data_dir / "logs" / f"recorder_{started:%Y%m%d_%H%M%S}.log"))
         session.add(row)
         session.flush()
         command = self._command(chunk_minutes)
@@ -297,12 +305,13 @@ class FFmpegRecorder(RecorderAdapter):
         row = self._active_session(session)
         if row is None:
             return self.status(session)
-        process = self._children.get(row.ffmpeg_pid or -1)
+        process = self._owned_process(row)
         if process is None:
-            if row.ffmpeg_pid and _pid_alive(row.ffmpeg_pid):
-                row.status, row.error_summary, row.recovery_checked_at = "uncertain", "Recorder process ownership cannot be proven after restart.", datetime.now()
-            elif row.status in {"recording", "stopping", "finalizing"}:
-                row.status, row.error_summary, row.stopped_at, row.recovery_checked_at = "failed", "Recorder process is no longer running.", datetime.now(), datetime.now()
+            if row.recorder_owner_id != self.runtime_instance_id:
+                row.status, row.error_summary = "interrupted", "Recorder belonged to a previous runtime instance; its persisted PID was not inspected or signalled."
+            else:
+                row.status, row.error_summary = "failed", "Owned recorder process is no longer available."
+            row.stopped_at, row.recovery_checked_at = datetime.now(), datetime.now()
             session.commit()
             return self._state(row)
         exit_code = process.poll()
@@ -351,9 +360,11 @@ class FFmpegRecorder(RecorderAdapter):
         row = self._active_session(session)
         if row is None:
             return self.status(session)
-        process = self._children.get(row.ffmpeg_pid or -1)
+        process = self._owned_process(row)
         if process is None:
-            row.status, row.error_summary, row.recovery_checked_at = "uncertain", "Cannot stop an unowned recorder PID automatically.", datetime.now()
+            row.status, row.error_summary, row.stopped_at, row.recovery_checked_at = (
+                "interrupted", "Cannot stop a recorder owned by another runtime instance; its PID was not signalled.",
+                datetime.now(), datetime.now())
             session.commit()
             return self._state(row)
         if process.poll() is None:
@@ -373,10 +384,19 @@ class FFmpegRecorder(RecorderAdapter):
         """Never kill a persisted PID: another process may have reused it."""
         return self.refresh(session)
 
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+    def shutdown(self, session: Session, timeout: float = 15.0) -> RecorderState:
+        """Ask only this runtime's child to finalize; never escalate to an unowned PID."""
+        row = self._active_session(session)
+        if row is None:
+            return self.status(session)
+        process = self._owned_process(row)
+        state = self.stop(session)
+        if process is None:
+            return state
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            row.error_summary = "Recorder did not finish before shutdown grace expired; partial chunk was preserved."
+            session.commit()
+            return self._state(row)
+        return self.refresh(session)

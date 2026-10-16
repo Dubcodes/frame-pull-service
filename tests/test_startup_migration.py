@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -115,6 +116,32 @@ class StartupMigrationTests(unittest.TestCase):
         self.assertEqual(pending_schema_additions(engine), {})
         self.assertFalse(database.exists())
         engine.dispose()
+
+    def test_two_services_can_initialize_an_already_current_schema(self):
+        database = self.root / "current.sqlite"
+        settings = self.settings.model_copy(update={"database_url": f"sqlite:///{database.as_posix()}"})
+        first = create_db_engine(settings)
+        second = create_db_engine(settings)
+        init_db(first)
+        barrier = threading.Barrier(2)
+        errors: list[Exception] = []
+
+        def initialize(engine) -> None:
+            try:
+                barrier.wait()
+                init_db(engine)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=initialize, args=(engine,)) for engine in (first, second)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(pending_schema_additions(first), {})
+        first.dispose()
+        second.dispose()
 
     def test_lifespan_applies_migration_before_health_queries_and_preserves_rows(self):
         app = create_app(self.settings)

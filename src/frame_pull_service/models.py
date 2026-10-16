@@ -67,6 +67,7 @@ class RecordingSession(Base):
     planned_end_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     manual: Mapped[bool] = mapped_column(Boolean, default=True)
     ffmpeg_pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recorder_owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     active_chunk_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     active_chunk_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     stop_after_chunk: Mapped[bool] = mapped_column(Boolean, default=False)

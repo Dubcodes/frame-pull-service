@@ -25,7 +25,7 @@ ADDITIVE_SCHEMA_COLUMNS = {
     "calendar_meetings": {"source_url": "TEXT", "last_attempted_at": "DATETIME", "provider_status": "VARCHAR(32) DEFAULT 'unknown'", "last_error": "TEXT"},
     "recording_sessions": {
         "planned_start_at": "DATETIME", "planned_end_at": "DATETIME", "manual": "BOOLEAN DEFAULT 1",
-        "ffmpeg_pid": "INTEGER", "active_chunk_sequence": "INTEGER", "active_chunk_started_at": "DATETIME",
+        "ffmpeg_pid": "INTEGER", "recorder_owner_id": "VARCHAR(64)", "active_chunk_sequence": "INTEGER", "active_chunk_started_at": "DATETIME",
         "stop_after_chunk": "BOOLEAN DEFAULT 0", "error_summary": "TEXT", "log_path": "TEXT",
         "exit_code": "INTEGER", "recovery_checked_at": "DATETIME",
     },
@@ -43,6 +43,7 @@ def create_db_engine(settings: Settings) -> Engine:
         def _sqlite_pragmas(dbapi_connection, _connection_record) -> None:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA busy_timeout=5000")
             cursor.close()
     return engine
 

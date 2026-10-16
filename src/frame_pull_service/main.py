@@ -97,6 +97,8 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
         yield
         if state.watcher_task: state.watcher_task.cancel()
         if state.worker: state.worker.stop()
+        with state.sessions() as session:
+            state.recorder.shutdown(session)
         state.engine.dispose()
 
     app = FastAPI(title="Frame Pull Service", version=__version__, lifespan=lifespan)

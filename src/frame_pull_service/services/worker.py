@@ -18,6 +18,7 @@ class Worker:
     def __init__(self, factory: sessionmaker[Session], settings: Settings):
         self.factory, self.settings = factory, settings
         self.stop_event, self.thread, self.jobs_lock = threading.Event(), None, threading.Lock()
+        self.claim_lock = threading.Lock()
         self.job_threads: dict[int, threading.Thread] = {}
 
     @property
@@ -30,15 +31,33 @@ class Worker:
         self.stop_event.clear(); self.thread = threading.Thread(target=self._loop, daemon=True, name="frame-pull-worker"); self.thread.start()
 
     def stop(self) -> None:
-        self.stop_event.set()
+        # Serialize with the short claim transaction. Once this returns, no
+        # later claim can begin, even if SIGTERM arrived mid-loop.
+        with self.claim_lock:
+            self.stop_event.set()
+
+    def wait_for_active_jobs(self) -> None:
+        """Keep the process alive for claimed work until it finishes or the container grace expires."""
+        if self.thread and self.thread is not threading.current_thread():
+            self.thread.join()
+        while True:
+            with self.jobs_lock:
+                active = [thread for thread in self.job_threads.values() if thread.is_alive()]
+            if not active:
+                return
+            for thread in active:
+                thread.join(timeout=1)
 
     def _loop(self) -> None:
         while not self.stop_event.wait(1):
             with self.jobs_lock:
                 self.job_threads = {key: value for key, value in self.job_threads.items() if value.is_alive()}
-            with self.factory() as session:
-                slots = int(get_value(session, "max_concurrent_recordings", self.settings.max_concurrent_jobs))
-                job = claim_next_job(session, max_concurrent=slots)
+            with self.claim_lock:
+                if self.stop_event.is_set():
+                    return
+                with self.factory() as session:
+                    slots = int(get_value(session, "max_concurrent_recordings", self.settings.max_concurrent_jobs))
+                    job = claim_next_job(session, max_concurrent=slots)
             if job is None:
                 continue
             thread = threading.Thread(target=self._process, args=(job.id,), daemon=True, name=f"frame-pull-job-{job.id}")

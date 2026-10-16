@@ -134,7 +134,8 @@ class RecorderTests(unittest.TestCase):
             def poll(self): return 0
         process = ExitedProcess()
         with self.sessions() as session:
-            row = RecordingSession(status="recording", adapter_name="ffmpeg", ffmpeg_pid=process.pid, started_at=datetime.now())
+            row = RecordingSession(status="recording", adapter_name="ffmpeg", ffmpeg_pid=process.pid,
+                                   recorder_owner_id=self.recorder.runtime_instance_id, started_at=datetime.now())
             session.add(row); session.commit()
             self.recorder._children[process.pid] = process
             state = self.recorder.refresh(session)
@@ -162,7 +163,8 @@ class RecorderTests(unittest.TestCase):
         process = RunningProcess()
         with self.sessions() as session:
             row = RecordingSession(status="recording", adapter_name="ffmpeg", ffmpeg_pid=process.pid,
-                                   started_at=datetime.now(), active_path=str(first), active_chunk_sequence=1)
+                                   recorder_owner_id=self.recorder.runtime_instance_id, started_at=datetime.now(),
+                                   active_path=str(first), active_chunk_sequence=1)
             session.add(row); session.commit()
             self.recorder._children[process.pid] = process
             original = self.recorder._latest_chunk
@@ -222,14 +224,35 @@ class RecorderTests(unittest.TestCase):
             self.assertEqual(item.status, RecordingStatus.QUEUED)
             self.assertIsNone(claim_next_job(session, max_concurrent=1, paused=True))
 
-    def test_dead_persisted_pid_is_failed_without_killing_any_process(self):
+    def test_persisted_pid_without_current_owner_is_interrupted_without_inspection(self):
         with self.sessions() as session:
             row = RecordingSession(status="recording", adapter_name="ffmpeg", ffmpeg_pid=99999999, started_at=datetime.now())
             session.add(row)
             session.commit()
             state = self.recorder.recover(session)
-            self.assertEqual(state.state, "failed")
-            self.assertIn("no longer running", state.error)
+            self.assertEqual(state.state, "interrupted")
+            self.assertIn("previous runtime instance", state.error)
+
+    def test_reused_pid_from_old_runtime_is_never_treated_as_owned(self):
+        class ReusedProcess:
+            pid = 76125
+            terminated = False
+            poll_calls = 0
+            def poll(self):
+                self.poll_calls += 1
+                return None
+            def terminate(self): self.terminated = True
+
+        process = ReusedProcess()
+        with self.sessions() as session:
+            row = RecordingSession(status="recording", adapter_name="ffmpeg", ffmpeg_pid=process.pid,
+                                   recorder_owner_id="old-container", started_at=datetime.now())
+            session.add(row); session.commit()
+            self.recorder._children[process.pid] = process
+            state = self.recorder.recover(session)
+            self.assertEqual(state.state, "interrupted")
+            self.assertFalse(process.terminated)
+            self.assertEqual(process.poll_calls, 0)
 
     def test_duplicate_start_is_rejected_and_stop_is_idempotent(self):
         with self.sessions() as session:
