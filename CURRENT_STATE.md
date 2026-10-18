@@ -1,5 +1,40 @@
 # Current State
 
+## V2.10B local backlog canary checkpoint (stopped)
+
+- The read-only production inventory found 74 physical source files: 62
+  source-present held jobs, 11 source-present READY recordings with zero job
+  history, and one source-present recording with a completed job plus a later
+  held duplicate job. The 11 zero-history recordings were queued through the
+  normal service as held jobs 95-105. The exact initial processable set was 73
+  jobs; no generic release operation was used.
+- A consistent pre-run SQLite/artifact export was created under the ignored
+  runtime backup area before queue changes. The 18 historical held jobs whose
+  sources are unavailable remained queued, unreleased, and unattempted; their
+  deterministic state digest remained
+  `aaa550d2baabb9ebaf06e3fde2ca6fb17afdc4e8750df0a655994afb2bde4247`.
+- Job 94 / recording 1 / `trackside_20260816-1137_016.ts` was selected as the
+  only canary release. It is a 3,600-second, 1,931,266,848-byte recording. The
+  worker claimed only this job, but it failed in about 0.22 seconds before
+  detector startup because `FRAME_PULL_LEGACY_PYTHON` had been set to the
+  service virtual environment, which does not contain `cv2`. The existing
+  frozen-detector environment at `J:\frame-pull\.venv\Scripts\python.exe`
+  passes the required Python import check. The canary was not retried and the
+  remaining backlog was not released.
+- Processing was immediately paused and the API and worker were stopped with
+  zero active jobs. Current queue state is 91 queued held, 0 released queued,
+  0 active, 12 complete, and 2 failed. Of the 91 held jobs, 72 are the remaining
+  source-present processable set, 18 are unavailable-source history, and job 93
+  is the excluded held duplicate for an already-complete recording.
+- Source deletion remained disabled. All original 74 `.ts` files retained
+  identical filename/size/mtime metadata; the aggregate manifest digest stayed
+  `783badcb93687811b3511108f26a8ae6acaeb02ced377173bbe1b32c1dff2b84`,
+  and all five representative SHA-256 values remained unchanged. The canary
+  produced zero interviews and zero candidates.
+- Decision: **CANARY FAILED — BACKLOG NOT STARTED**. A future explicitly
+  authorized retry must use the verified frozen-detector Python environment;
+  no retry was attempted in this checkpoint.
+
 ## V2.10 runtime portability checkpoint (target blocked)
 
 - Runtime source access now uses one containment-checked resolver based on the
