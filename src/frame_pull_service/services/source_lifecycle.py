@@ -1,23 +1,21 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from pathlib import Path
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..models import Interview, InterviewRevision, Job, JobStatus, Recording, ReviewStatus, SourceDeletionAudit
 from .operations import get_value
-from .paths import source_path
+from .paths import resolve_data_artifact, resolve_recording_source
 
 
 def deletion_eligibility(session: Session, settings: Settings, recording: Recording) -> dict:
     checks: dict[str, bool] = {}
     try:
-        source = source_path(settings.source_dir, Path(recording.source_path).name)
+        source = resolve_recording_source(settings, recording)
         checks["contained_ts_source"] = source.exists()
-    except ValueError:
+    except (ValueError, FileNotFoundError):
         checks["contained_ts_source"] = False
     checks["deletion_enabled"] = bool(get_value(session, "source_deletion_enabled", False))
     checks["closed"] = bool(recording.is_closed or recording.stable_at)
@@ -32,7 +30,15 @@ def deletion_eligibility(session: Session, settings: Settings, recording: Record
     retention = timedelta(hours=int(get_value(session, "source_retention_hours", 168)))
     checks["retention_elapsed"] = recording.first_discovered_at <= datetime.utcnow() - retention
     revisions = [session.get(InterviewRevision, item.active_revision_id) for item in interviews]
-    checks["evidence_present"] = bool(revisions) and all(revision and Path(revision.clip_path).exists() and Path(revision.poster_path).exists() and Path(revision.manifest_path).exists() for revision in revisions)
+    try:
+        checks["evidence_present"] = bool(revisions) and all(
+            revision and resolve_data_artifact(settings, revision.clip_path).exists()
+            and resolve_data_artifact(settings, revision.poster_path).exists()
+            and resolve_data_artifact(settings, revision.manifest_path).exists()
+            for revision in revisions
+        )
+    except (ValueError, FileNotFoundError):
+        checks["evidence_present"] = False
     checks["approved_portraits_present"] = all(item.review_status != ReviewStatus.APPROVED or (settings.data_dir / "approved" / f"{item.interview_key}.jpg").exists() for item in interviews)
     return {"recording_id": recording.id, "filename": recording.filename, "safe_to_delete": all(checks.values()), "checks": checks}
 
@@ -41,7 +47,7 @@ def delete_if_eligible(session: Session, settings: Settings, recording: Recordin
     result = deletion_eligibility(session, settings, recording)
     if not result["safe_to_delete"]:
         return result
-    path = source_path(settings.source_dir, Path(recording.source_path).name)
+    path = resolve_recording_source(settings, recording)
     # Re-check containment immediately before the only destructive operation.
     if not path.exists() or path.resolve().parent != settings.source_dir.resolve():
         raise ValueError("source no longer passes containment check")

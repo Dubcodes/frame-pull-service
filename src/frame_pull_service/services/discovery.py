@@ -34,7 +34,7 @@ def discover_recordings(session: Session, settings: Settings, now: datetime | No
         if path
     }
     baseline_exists = session.execute(select(Recording.id).limit(1)).first() is not None
-    created = updated = queued = 0
+    created = updated = queued = conflicts = 0
     for path in sorted(source_dir.glob("*.ts")):
         # An adapter's active output is never a candidate for stability or queueing.
         # It is intentionally absent from discovery until the recorder closes it.
@@ -64,6 +64,17 @@ def discover_recordings(session: Session, settings: Settings, now: datetime | No
                 queue_recording(session, record)
                 queued += 1
             continue
+        canonical = str(path.resolve())
+        same_location = record.source_path == canonical
+        same_identity = record.fingerprint == fingerprint or (
+            record.size_bytes == stat.st_size and abs(record.mtime_epoch - stat.st_mtime) <= 0.001
+        )
+        if not same_location:
+            if not same_identity:
+                conflicts += 1
+                continue
+            record.source_path = canonical
+            updated += 1
         if record.size_bytes != stat.st_size or record.mtime_epoch != stat.st_mtime:
             record.size_bytes, record.mtime_epoch, record.fingerprint = stat.st_size, stat.st_mtime, fingerprint
             if record.status not in (RecordingStatus.PROCESSING, RecordingStatus.COMPLETE):
@@ -80,7 +91,8 @@ def discover_recordings(session: Session, settings: Settings, now: datetime | No
                 queue_recording(session, record)
                 queued += 1
     session.commit()
-    return {"created": created, "updated": updated, "queued": queued, "baseline_established": not baseline_exists}
+    return {"created": created, "updated": updated, "queued": queued, "conflicts": conflicts,
+            "baseline_established": not baseline_exists}
 
 
 def initialize_baseline(session: Session, settings: Settings) -> dict:

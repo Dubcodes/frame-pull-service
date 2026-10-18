@@ -16,7 +16,7 @@ from ..models import Candidate, Interview, InterviewRevision, ProcessingRun, Rec
 from .legacy_engine import LegacyResult
 from .manifests import write_manifest
 from .media import contained_clip_bounds, create_clip, extract_frame, ffprobe_duration
-from .paths import relative_artifact
+from .paths import relative_artifact, resolve_recording_source
 from .time_model import recording_end
 
 
@@ -68,7 +68,7 @@ def _manifest(interview: Interview, revision: InterviewRevision, candidates: lis
 
 
 def normalize_run(session: Session, settings: Settings, recording: Recording, processing_run: ProcessingRun, result: LegacyResult) -> list[Interview]:
-    source = Path(recording.source_path)
+    source = resolve_recording_source(settings, recording, verify_size=True)
     duration = ffprobe_duration("ffprobe", source)
     # FFprobe is already required by the single-recording normalization path.
     # Persist this immutable result so dashboard reads never need to probe media.

@@ -64,9 +64,46 @@ alive for already-claimed work during Compose's ten-minute stop grace; Docker
 may terminate the container after that external bound, and stale-job recovery
 then applies on the next start.
 
-Docker was not available on the V2.9 Windows development host, so the files and
-tests are qualified statically but the image, detector, and target mounts still
-require V2.10 execution on the Linux server before any real job is released.
+### Windows-to-Linux runtime relocation
+
+Existing Windows state must be exported consistently and relocated before the
+containers start. Create the export while the web, worker, and recorder are
+stopped:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\export_runtime_state.py `
+  --data-root data
+```
+
+The exporter uses SQLite's backup API, copies the service-owned artifact roots,
+and writes per-file SHA-256 values plus a semantic state snapshot. It does not
+copy recordings, WAL/SHM sidecars, earlier backups, or isolated qualification
+roots.
+
+After restoring the export and recordings on Linux, run the bounded relocation
+tool before normal startup:
+
+```bash
+python scripts/relocate_runtime_state.py \
+  --database /srv/frame-pull/data/frame_pull.db \
+  --old-source-root 'J:\frame-pull\trackside_recordings' \
+  --new-source-root /recordings \
+  --old-data-root 'J:\projects\frame-pull-service\data' \
+  --new-data-root /data \
+  --dry-run
+```
+
+Review every unresolved or missing path, then repeat with `--apply`. Apply is
+transactional, preserves queue/editorial semantics, and verifies that a second
+run is idempotent. Unknown external paths and missing recording sources block
+apply. Normal source access resolves `settings.source_dir / recording.filename`
+with containment and identity checks instead of trusting a persisted host path.
+
+The V2.10 development-side audit found 30 pre-existing missing source files,
+including 18 held queued recordings. These are not included in the runtime
+export and must be recovered or explicitly resolved before target relocation
+can pass. The target Linux host has not yet been supplied or qualified; no real
+job may be released.
 
 ## Windows development / historical qualification
 

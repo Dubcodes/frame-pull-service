@@ -1,5 +1,45 @@
 # Current State
 
+## V2.10 runtime portability checkpoint (target blocked)
+
+- Runtime source access now uses one containment-checked resolver based on the
+  configured source root and recording filename. Worker invocation,
+  normalization, manual frame capture, and source lifecycle checks no longer
+  trust the absolute host path stored by an earlier deployment. Discovery may
+  refresh a stored path only when fingerprint evidence, or the existing
+  size-and-mtime identity, matches; conflicts remain untouched and reported.
+- `scripts/relocate_runtime_state.py` performs an explicit-root, cross-platform
+  dry-run or transactional apply over every known path-bearing column and the
+  narrowly scoped JSON evidence fields. It rejects external paths, validates
+  target recording identity, preserves queue/review relationships and state,
+  and verifies post-apply idempotence. The production dry-run proposed 239
+  bounded changes (104 source and 135 artifact paths), found no external paths,
+  and made no database changes.
+- A consistent SQLite-backup export was created under the ignored runtime
+  backup area with 239 files totalling 130,694,617 bytes. All recorded SHA-256
+  checksums verified, and all 135 referenced artifact paths exist both in the
+  Windows runtime and export. The snapshot remains 104 recordings and 94 jobs:
+  81 queued held, 0 released, 0 active, 12 complete, and 1 failed. The queued
+  relationship digest remains
+  `c7cd9cf57497aa02a4e42f5eb8d9b3dad94c6d2fe9d66c44b314715dccdfbd32`.
+- The source corpus currently contains 74 `.ts` files. Thirty database source
+  rows are already missing on Windows: 18 held queued, 11 complete, and 1
+  failed. The known-positive
+  `trackside_20260816-1237_016.ts` remains present with SHA-256
+  `83FDD0A8ABC164029C0C29EB5F6C9AE1C1B6E53301B4ABEEB6EC265FD8630C5D`.
+  Relocation apply deliberately blocks while recording targets are missing;
+  missing history is reported rather than fabricated.
+- The target Linux hostname/SSH destination and corpus recovery source have not
+  been provided. No target precheck, transfer, restore, container build, schema
+  migration, web/worker start, recorder probe, or isolated Linux detector run
+  was attempted. Production remains paused with every queued job held;
+  autoqueue, automatic Race Day mode, source deletion, and automatic recording
+  remain off. No production job was released, claimed, or processed.
+- Current decision: **STATE RELOCATION UNSAFE / INCOMPLETE** until the 30
+  missing source files are recovered or their disposition is explicitly
+  resolved and the actual Linux target completes qualification.
+- **REAL i5 PERFORMANCE BENCHMARK NOT YET RUN.**
+
 ## V2.9 Linux/Docker production foundation
 
 - Production now targets one Linux image used by `frame-pull-web` and

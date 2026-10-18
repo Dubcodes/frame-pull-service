@@ -11,6 +11,7 @@ from ..config import Settings
 from ..models import Candidate, Interview, InterviewRevision, Recording, ReviewEvent, ReviewStatus
 from .media import extract_frame
 from .manifests import write_manifest
+from .paths import resolve_data_artifact, resolve_recording_source
 
 
 def refresh_manifest(session: Session, interview: Interview) -> None:
@@ -66,9 +67,9 @@ def capture_frame(session: Session, settings: Settings, interview: Interview, cl
     if clip_time < 0 or clip_time > revision.clip_end - revision.clip_start + 0.25:
         raise ValueError("clip timestamp is outside this evidence clip")
     source_time = revision.clip_start + clip_time
-    source = Path(session.get(Recording, interview.recording_id).source_path)
+    source = resolve_recording_source(settings, session.get(Recording, interview.recording_id), verify_size=True)
     rank = (max((candidate.rank for candidate in revision.candidates), default=0) + 1)
-    target = Path(revision.manifest_path).parent / "candidates" / f"manual_{rank:03d}.jpg"
+    target = resolve_data_artifact(settings, revision.manifest_path).parent / "candidates" / f"manual_{rank:03d}.jpg"
     extract_frame("ffmpeg", source, target, source_time)
     candidate = Candidate(revision_id=revision.id, rank=rank, source_timestamp=source_time, image_path=str(target), source="manual_clip_capture", selected=True)
     session.add(candidate); session.flush(); select_candidate(session, interview, candidate)
@@ -84,7 +85,7 @@ def approve(session: Session, settings: Settings, interview: Interview) -> Path:
     candidate = session.get(Candidate, interview.selected_candidate_id)
     destination = settings.data_dir / "approved" / f"{interview.interview_key}.jpg"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(candidate.image_path, destination)
+    shutil.copy2(resolve_data_artifact(settings, candidate.image_path), destination)
     interview.review_status, interview.approved_at, interview.export_state = ReviewStatus.APPROVED, datetime.utcnow(), "pending"
     event(session, interview, "approved", {"candidate_id": candidate.id, "portrait": destination.name})
     refresh_manifest(session, interview)

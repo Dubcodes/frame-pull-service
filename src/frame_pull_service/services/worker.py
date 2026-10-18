@@ -12,6 +12,7 @@ from .legacy_engine import LegacySubprocessEngine
 from .normalizer import normalize_run
 from .queue import claim_next_job, recover_stale_jobs
 from .operations import get_value
+from .paths import resolve_recording_source
 
 
 class Worker:
@@ -78,7 +79,8 @@ class Worker:
                 if match: current.progress_percent = min(90.0, float(match.group(1)) * 0.9)
                 update.commit()
         try:
-            result = LegacySubprocessEngine(self.settings).run(__import__("pathlib").Path(recording.source_path), __import__("pathlib").Path(run.job_dir), progress)
+            source = resolve_recording_source(self.settings, recording, verify_size=True)
+            result = LegacySubprocessEngine(self.settings).run(source, __import__("pathlib").Path(run.job_dir), progress)
             with self.factory() as session:
                 job, recording, run = session.get(Job, job_id), session.get(Recording, recording.id), session.get(ProcessingRun, run.id)
                 normalize_run(session, self.settings, recording, run, result)
