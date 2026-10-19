@@ -1,5 +1,84 @@
 # Current State
 
+## V2.10D backlog completion audit (systemic failure paused)
+
+- The V2.10C API and worker were no longer running when this audit began. The
+  host had rebooted at 21:25:48 NZDT on 19 October 2026. The database retained
+  57 released queued jobs and job 31 in `PROCESSING` at its initial heartbeat;
+  neither service was restarted and no new jobs were queued or released.
+- Before the interruption, nine V2.10C jobs completed, including retry canary
+  106. They added 30 interviews and 70 candidates. Eight completed recordings
+  had one or more interviews and one completed recording legitimately had
+  zero interviews.
+- Jobs 25-30 then failed consecutively during the shutdown sequence. Job 25
+  exited `0x40010004` after its detector log reported a DLL initialization
+  problem; jobs 26-30 immediately exited `0xC000026B`. Windows Application
+  events recorded repeated `C:\ProgramData\miniconda3\python.exe` access
+  violations in `msvcp140.dll`. Job 31 was abandoned at `starting` by the host
+  reboot and was marked `STALE` by the application's standard expired-heartbeat
+  recovery. These are classified as a systemic runtime/host failure, not six
+  independent content failures.
+- The application's settings service restored `processing_paused=true` without
+  restarting the API or worker. Final audited queue shape is 19 held queued,
+  57 released queued, zero active, 21 total complete, eight total failed, and
+  one stale. The backlog is not drained. Jobs 25-31 are later retry candidates;
+  no retry was created during this audit.
+- All 18 unavailable-source jobs remain queued, held, and unattempted, with
+  digest `aaa550d2baabb9ebaf06e3fde2ca6fb17afdc4e8750df0a655994afb2bde4247`.
+  Job 93 also remains queued, held, and unattempted.
+- Source deletion remained disabled. All 74 original `.ts` files matched the
+  pre-run filename/size/mtime manifest with aggregate digest
+  `783badcb93687811b3511108f26a8ae6acaeb02ced377173bbe1b32c1dff2b84`;
+  all five sampled SHA-256 values matched, including the known-positive
+  `trackside_20260816-1237_016.ts` value
+  `83fdd0a8abc164029c0c29eb5f6c9ae1c1b6e53301b4abeeb6ec265fd8630c5d`.
+- No worker or detector process remains. The API also remains stopped after the
+  reboot, so the dashboard/review UI could not be checked without violating the
+  instruction not to restart it. Compileall, all 122 unit tests, and
+  `git diff --check` passed after the pause.
+- Decision: **SYSTEMIC FAILURE — BACKLOG PAUSED**. Diagnose and stabilize the
+  Windows/Conda runtime before restarting services or retrying jobs 25-31.
+
+## V2.10C local Windows backlog recovery (running)
+
+- The local, gitignored `.env` now selects the established Windows runtime:
+  sources at `J:\frame-pull\trackside_recordings`, service data at
+  `J:\projects\frame-pull-service\data`, frozen engine root at
+  `J:\frame-pull`, and legacy Python at
+  `J:\frame-pull\.venv\Scripts\python.exe`. The legacy environment passed
+  the required OpenCV, NumPy, PyYAML, pytesseract, and Pillow import check.
+- A new normal held retry, job 106, was created for recording 1; failed job 94
+  remains unchanged as audit history. Job 106 alone was released and claimed.
+  Its detector command used the corrected legacy Python, exactly one `--input`,
+  and no `--all`. It completed in 337.857 seconds with four interviews and two
+  candidates; the recording returned to `COMPLETE`.
+- After a clean pause and fresh eligibility calculation, exactly 72 remaining
+  source-present jobs were explicitly released. The 18 unavailable-source
+  historical jobs remain queued, held, and unattempted, with unchanged digest
+  `aaa550d2baabb9ebaf06e3fde2ca6fb17afdc4e8750df0a655994afb2bde4247`.
+  Job 93 also remains queued, held, and unattempted because its recording has
+  an earlier completed job.
+- The first three post-canary jobs all completed normally at concurrency one:
+  job 16 (`trackside_20260920-1750_020.ts`) in 152.322 seconds with zero
+  interviews/candidates; job 17 (`trackside_20260920-1650_020.ts`) in 203.559
+  seconds with one interview and three candidates; and job 18
+  (`trackside_20260920-1550_020.ts`) in 285.506 seconds with three interviews
+  and six candidates. No database-lock, import, FFmpeg, Tesseract, resolver, or
+  wrong-claim failure appeared.
+- At the qualification snapshot, processing remained resumed with job 19 as
+  the sole active claim, 68 released queued jobs, 19 held queued jobs, 16 total
+  complete jobs, and two historical failed jobs. API Python PID 42776 and
+  worker Python PID 41600 were intentionally left running so the backlog can
+  continue draining at concurrency one.
+- Source deletion remained disabled. All 74 original `.ts` files matched the
+  pre-run filename/size/mtime manifest, whose aggregate digest remains
+  `783badcb93687811b3511108f26a8ae6acaeb02ced377173bbe1b32c1dff2b84`;
+  all five sampled SHA-256 values also matched. The recorder remained idle.
+- Decision: **LOCAL BACKLOG RUN ESTABLISHED AND CONTINUING**. Pause released
+  work through `POST http://127.0.0.1:8094/api/operations/pause` and wait for
+  `active_jobs` to empty before stopping the worker; status is available from
+  `GET http://127.0.0.1:8094/api/health`.
+
 ## V2.10B local backlog canary checkpoint (stopped)
 
 - The read-only production inventory found 74 physical source files: 62
