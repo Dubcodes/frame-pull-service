@@ -1,5 +1,47 @@
 # Current State
 
+## V2.10E Windows detector runtime stabilization (qualified; production paused)
+
+- Precise Windows event chronology establishes runtime instability rather than
+  shutdown-only interruption. Miniconda Python faulted in its bundled
+  `msvcp140.dll` at 21:18:41, 21:18:50, 21:24:18, and 21:24:23 NZDT on
+  19 October 2026. Only afterward, at 21:24:55, StartMenuExperienceHost
+  initiated a user-context restart (`Other (Unplanned)`). Event Log stopped at
+  21:25:10, the OS entered shutdown at 21:25:29, and the clean boot began at
+  21:25:48. No Windows Update event initiated the restart.
+- The frozen detector venv was not modified. Its `pyvenv.cfg` identifies
+  `C:\ProgramData\miniconda3\python.exe` 3.12.2 as its base. It loaded
+  Miniconda's 2020 VC++ DLLs at version `14.27.29016`, whereas System32 carries
+  version `14.51.36247`. Application events reported access violations in the
+  Miniconda copy of `msvcp140.dll`.
+- A separate ignored detector environment was created at
+  `J:\projects\frame-pull-service\.detector-venv` using official CPython
+  3.12.5. It contains only OpenCV headless 4.13.0, NumPy 2.4.4, PyYAML 6.0.3,
+  pytesseract 0.3.13, Pillow 12.2.0, and their minimal packaging dependency;
+  Torch was not installed. Tesseract 5.5.0 and FFmpeg/FFprobe 8.1.1 passed
+  executable checks.
+- Three sequential, production-isolated normal-service qualifications passed
+  with exactly one `--input`, no `--all`, exit code zero, successful
+  normalization, and unchanged production state. The preserved 105-second
+  control completed in 5.094 seconds with zero interviews/candidates. The
+  known-positive full-hour control completed twice, in 437.657 and 434.578
+  seconds; each run produced six interviews and 22 candidates.
+- The post-endurance Application/System event check found no new Python,
+  `msvcp140.dll`, runtime-initialization, shutdown, or reboot events. At the
+  final resource sample the host had approximately 9.4 GiB free RAM, 102.8 GiB
+  free on C:, 38.8 GiB free on J:, and CPU samples of 4.68%, 0.97%, and 0.42%.
+- The local gitignored `.env` now selects
+  `J:\projects\frame-pull-service\.detector-venv\Scripts\python.exe` for the
+  production detector. Production was not resumed: processing remains paused,
+  all 57 previously released jobs remain queued, active count is zero, source
+  deletion/autoqueue/automatic Race Day mode remain false, the 18 unavailable
+  jobs and job 93 remain held, and all 74 source recordings remain present.
+- Jobs 25-31 were not retried. Recommended next-checkpoint retry order is
+  25, 26, 27, 28, 29, 30, then 31, using new held rows and beginning with job
+  25 alone as the retry canary. Their failed/stale rows remain audit history.
+- Decision: **CLEAN DEDICATED DETECTOR RUNTIME PROVEN SAFE**. The production
+  backlog still requires a separately authorized resume checkpoint.
+
 ## V2.10D backlog completion audit (systemic failure paused)
 
 - The V2.10C API and worker were no longer running when this audit began. The

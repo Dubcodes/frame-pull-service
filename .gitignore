@@ -1,4 +1,5 @@
 .venv/
+.detector-venv/
 .env
 data/
 __pycache__/
