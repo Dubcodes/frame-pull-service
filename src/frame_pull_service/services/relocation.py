@@ -20,6 +20,8 @@ from ..models import (
 WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:[\\/]")
 URL = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 API_PATH = re.compile(r"^/api/")
+MISSING_SOURCE_MANIFEST_SCHEMA = "frame-pull-missing-sources-v1"
+MISSING_SOURCE_DISPOSITION = "physical_source_unavailable"
 
 
 @dataclass(frozen=True)
@@ -49,11 +51,20 @@ class RelocationIssue:
     reason: str
 
 
+@dataclass(frozen=True)
+class MissingSourceAllowance:
+    recording_id: int
+    filename: str
+    size_bytes: int
+    disposition: str
+
+
 @dataclass
 class RelocationPlan:
     changes: list[PathChange] = field(default_factory=list)
     unresolved: list[RelocationIssue] = field(default_factory=list)
     missing_targets: list[RelocationIssue] = field(default_factory=list)
+    allowed_missing_sources: list[MissingSourceAllowance] = field(default_factory=list)
     audited: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def report(self) -> dict[str, Any]:
@@ -67,7 +78,62 @@ class RelocationPlan:
             "change_count": len(self.changes),
             "unresolved": [asdict(item) for item in self.unresolved],
             "missing_targets": [asdict(item) for item in self.missing_targets],
+            "allowed_missing_sources": [asdict(item) for item in self.allowed_missing_sources],
         }
+
+
+def load_missing_source_manifest(path: Path) -> dict[int, MissingSourceAllowance]:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if document.get("schema") != MISSING_SOURCE_MANIFEST_SCHEMA:
+        raise ValueError("unsupported missing-source manifest schema")
+    rows = document.get("recordings")
+    if not isinstance(rows, list):
+        raise ValueError("missing-source manifest recordings must be a list")
+    result: dict[int, MissingSourceAllowance] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("missing-source manifest row must be an object")
+        allowance = MissingSourceAllowance(
+            recording_id=int(row.get("recording_id", 0)),
+            filename=str(row.get("filename", "")),
+            size_bytes=int(row.get("size_bytes", -1)),
+            disposition=str(row.get("disposition", "")),
+        )
+        if allowance.recording_id <= 0 or Path(allowance.filename).name != allowance.filename:
+            raise ValueError("missing-source manifest contains an invalid recording identity")
+        if not allowance.filename.lower().endswith(".ts") or allowance.size_bytes < 0:
+            raise ValueError("missing-source manifest contains an invalid source identity")
+        if allowance.disposition != MISSING_SOURCE_DISPOSITION:
+            raise ValueError("missing-source manifest contains an unsupported disposition")
+        if allowance.recording_id in result:
+            raise ValueError("missing-source manifest contains a duplicate recording id")
+        result[allowance.recording_id] = allowance
+    return result
+
+
+def build_missing_source_manifest(session: Session, source_root: Path) -> dict[str, Any]:
+    source_root = source_root.resolve()
+    rows = []
+    for recording in session.query(Recording).order_by(Recording.id):
+        if Path(recording.filename).name != recording.filename or not recording.filename.lower().endswith(".ts"):
+            raise ValueError(f"unsafe recording filename for row {recording.id}")
+        if (source_root / recording.filename).is_file():
+            continue
+        statuses = [status.value for status in session.execute(
+            select(Job.status).where(Job.recording_id == recording.id).order_by(Job.id)
+        ).scalars()]
+        rows.append({
+            "recording_id": recording.id,
+            "filename": recording.filename,
+            "size_bytes": recording.size_bytes,
+            "disposition": MISSING_SOURCE_DISPOSITION,
+            "job_statuses": statuses,
+        })
+    return {
+        "schema": MISSING_SOURCE_MANIFEST_SCHEMA,
+        "recordings": rows,
+        "recording_count": len(rows),
+    }
 
 
 PATH_COLUMNS = (
@@ -100,9 +166,19 @@ def validate_roots(roots: RelocationRoots) -> None:
             raise ValueError("source and data roots must not overlap")
 
 
-def plan_runtime_relocation(session: Session, roots: RelocationRoots, *, inspect_files: bool = True) -> RelocationPlan:
+def plan_runtime_relocation(
+    session: Session,
+    roots: RelocationRoots,
+    *,
+    inspect_files: bool = True,
+    missing_source_allowances: dict[int, MissingSourceAllowance] | None = None,
+) -> RelocationPlan:
     validate_roots(roots)
     plan = RelocationPlan()
+    allowances = missing_source_allowances or {}
+    if allowances and not inspect_files:
+        raise ValueError("missing-source allowances require target file inspection")
+    matched_allowances: set[int] = set()
 
     recordings = session.query(Recording).order_by(Recording.id).all()
     source_audit = _audit_bucket(plan, "recordings", "source_path")
@@ -110,19 +186,39 @@ def plan_runtime_relocation(session: Session, roots: RelocationRoots, *, inspect
         value = recording.source_path
         _audit_value(source_audit, value)
         mapped = _map_recording(recording, roots)
-        if mapped is None:
-            if not _is_within(value, roots.new_source):
-                plan.unresolved.append(RelocationIssue("recordings", "source_path", recording.id, value, "outside approved source roots"))
+        if mapped is None and not _is_within(value, roots.new_source):
+            plan.unresolved.append(RelocationIssue("recordings", "source_path", recording.id, value, "outside approved source roots"))
             continue
-        target_exists = _target_exists(mapped) if inspect_files else None
+        target = mapped or value
+        target_exists = _target_exists(target) if inspect_files else None
         if target_exists:
-            size = Path(mapped).stat().st_size
+            size = Path(target).stat().st_size
             if size != recording.size_bytes:
                 plan.unresolved.append(RelocationIssue("recordings", "source_path", recording.id, value, "target size conflicts with database identity"))
                 continue
+            if recording.id in allowances:
+                plan.unresolved.append(RelocationIssue("missing_source_manifest", "recording_id", recording.id, recording.filename, "manifest marks a source missing but target exists"))
+                matched_allowances.add(recording.id)
         elif inspect_files:
-            plan.missing_targets.append(RelocationIssue("recordings", "source_path", recording.id, mapped, "source file missing"))
-        plan.changes.append(PathChange("recordings", "source_path", recording.id, value, mapped, target_exists))
+            allowance = allowances.get(recording.id)
+            if allowance and allowance.filename == recording.filename and allowance.size_bytes == recording.size_bytes:
+                plan.allowed_missing_sources.append(allowance)
+                matched_allowances.add(recording.id)
+            else:
+                reason = "source file missing"
+                if allowance:
+                    reason = "source file missing and manifest identity does not match database"
+                    matched_allowances.add(recording.id)
+                plan.missing_targets.append(RelocationIssue("recordings", "source_path", recording.id, target, reason))
+        if mapped is not None:
+            plan.changes.append(PathChange("recordings", "source_path", recording.id, value, mapped, target_exists))
+
+    for recording_id in sorted(set(allowances) - matched_allowances):
+        allowance = allowances[recording_id]
+        plan.unresolved.append(RelocationIssue(
+            "missing_source_manifest", "recording_id", recording_id, allowance.filename,
+            "manifest row does not match a database recording",
+        ))
 
     for model, table, column, root_kind in PATH_COLUMNS:
         bucket = _audit_bucket(plan, table, column)

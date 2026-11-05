@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8094
     discovery_interval_seconds: int = 30
+    source_lifecycle_sweep_limit: int = 5
     stable_for_seconds: int = 120
     min_input_bytes: int = 10 * 1024 * 1024
     auto_queue: bool = False

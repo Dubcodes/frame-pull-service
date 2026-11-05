@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -25,11 +27,21 @@ from .services.worker import Worker
 from .services.operations import get_value, seed_settings, settings_view, update_settings
 from .services.race_days import backfill_race_days, list_race_days, race_day_summary
 from .services.groups import acknowledge_group_export, acknowledge_interview_export, group_view, list_groups, sync_groups
-from .services.source_lifecycle import deletion_eligibility
+from .services.source_lifecycle import deletion_eligibility, source_lifecycle_status, sweep_source_lifecycle
 from .services.calendar import LoveRacingCalendarProvider, refresh_race_day
 from .services.context import refresh_race_day_contexts, resolve_interview_context
 from .services.orchestrator import RaceDayOrchestrator, planned_recording_window
 from .services.recorder import FFmpegRecorder
+
+
+LOG = logging.getLogger(__name__)
+
+
+def _free_bytes(path: Path) -> int | None:
+    try:
+        return shutil.disk_usage(path).free
+    except OSError:
+        return None
 
 
 class ServiceState:
@@ -41,6 +53,8 @@ class ServiceState:
         self.recorder = FFmpegRecorder(settings)
         self.race_day_orchestrator = RaceDayOrchestrator(self.recorder)
         self.watcher_task: asyncio.Task | None = None
+        self.source_lifecycle_cursor = 0
+        self.source_lifecycle_last_result: dict | None = None
 
 
 def serialize_recording(recording: Recording, timezone: str = "Pacific/Auckland") -> dict:
@@ -92,7 +106,21 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
                 except Exception:
                     # Discovery is best-effort; a temporary filesystem error must
                     # not take down review or queue operations.
-                    continue
+                    LOG.exception("periodic discovery failed")
+                try:
+                    with state.sessions() as session:
+                        result = sweep_source_lifecycle(
+                            session,
+                            state.settings,
+                            limit=state.settings.source_lifecycle_sweep_limit,
+                            after_recording_id=state.source_lifecycle_cursor,
+                        )
+                        state.source_lifecycle_cursor = result["next_after_recording_id"]
+                        state.source_lifecycle_last_result = result
+                except Exception:
+                    # Lifecycle work is independently best-effort; a failed sweep
+                    # cannot stop discovery, review, queueing, or the next sweep.
+                    LOG.exception("periodic source lifecycle sweep failed")
         state.watcher_task = asyncio.create_task(watch())
         yield
         if state.watcher_task: state.watcher_task.cancel()
@@ -112,12 +140,20 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             paused = bool(get_value(session, "processing_paused", False))
             held = session.query(Job).filter(Job.status == JobStatus.QUEUED, Job.released_for_processing.is_(False)).count()
             released = session.query(Job).filter(Job.status == JobStatus.QUEUED, Job.released_for_processing.is_(True)).count()
+            lifecycle = source_lifecycle_status(session, state.settings, recent_limit=0)
+            source_free = _free_bytes(state.settings.source_dir)
+            data_free = _free_bytes(state.settings.data_dir)
             return {"version": __version__, "database": "ok", "watcher_active": state.watcher_task is not None,
                     "worker_active": bool(state.worker and state.worker.active), "processing_paused": paused,
                     "current_job": active[0].id if active else None, "active_jobs": [{"id": item.id, "stage": item.progress_stage, "percent": item.progress_percent} for item in active],
                     "queue_depth": held + released, "held_jobs": held, "released_jobs": released,
                     "completed_jobs": session.query(Job).filter(Job.status == JobStatus.COMPLETE).count(),
                     "failed_jobs": session.query(Job).filter(Job.status.in_([JobStatus.FAILED, JobStatus.STALE])).count(),
+                    "recording_count": session.query(Recording).count(),
+                    "pending_reviews": session.query(Interview).filter(Interview.review_status == ReviewStatus.PENDING).count(),
+                    "pending_exports": session.query(Interview).filter(Interview.review_status == ReviewStatus.APPROVED, Interview.export_state != "exported").count(),
+                    "deletion_eligible_sources": lifecycle["counts"]["eligible"],
+                    "storage": {"recordings_free_bytes": source_free, "data_free_bytes": data_free},
                     "max_concurrent_recordings": get_value(session, "max_concurrent_recordings", 1),
                     "ffmpeg_available": True, "ffprobe_available": True, "legacy_engine_available": state.settings.legacy_python.exists(),
                     "recorder": state.recorder.refresh(session).public()}
@@ -267,6 +303,13 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             item = session.get(Recording, recording_id)
             if not item: raise HTTPException(404, "recording not found")
             return deletion_eligibility(session, state.settings, item)
+
+    @app.get("/api/operations/source-lifecycle")
+    def lifecycle_status() -> dict:
+        with state.sessions() as session:
+            result = source_lifecycle_status(session, state.settings)
+            result["last_sweep"] = state.source_lifecycle_last_result
+            return result
 
     @app.get("/api/interviews")
     def interviews(status: ReviewStatus | None = None, export_state: str | None = None) -> list[dict]:

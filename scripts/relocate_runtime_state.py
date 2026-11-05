@@ -8,7 +8,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from frame_pull_service.services.relocation import (
-    RelocationRoots, apply_runtime_relocation, plan_runtime_relocation, semantic_snapshot,
+    RelocationRoots, apply_runtime_relocation, load_missing_source_manifest,
+    plan_runtime_relocation, semantic_snapshot,
 )
 
 
@@ -23,20 +24,26 @@ def parser() -> argparse.ArgumentParser:
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--apply", action="store_true")
     result.add_argument("--skip-file-check", action="store_true", help="Inventory paths without checking the target filesystem.")
+    result.add_argument("--missing-source-manifest", type=Path,
+                        help="Versioned exact-identity manifest for audited unavailable recording sources.")
     return result
 
 
 def main() -> int:
     args = parser().parse_args()
+    if args.apply and args.skip_file_check:
+        raise SystemExit("--apply requires target file checks")
     database = args.database.resolve()
     if not database.is_file():
         raise SystemExit(f"database not found: {database}")
     roots = RelocationRoots(args.old_source_root, args.new_source_root, args.old_data_root, args.new_data_root)
+    allowances = load_missing_source_manifest(args.missing_source_manifest.resolve()) if args.missing_source_manifest else {}
     engine = create_engine(f"sqlite:///{database.as_posix()}")
     try:
         with Session(engine) as session:
             before = semantic_snapshot(session)
-            plan = plan_runtime_relocation(session, roots, inspect_files=not args.skip_file_check)
+            plan = plan_runtime_relocation(session, roots, inspect_files=not args.skip_file_check,
+                                           missing_source_allowances=allowances)
             report = {"mode": "apply" if args.apply else "dry-run", "database": str(database), **plan.report(),
                       "semantic_before": _semantic_report(before)}
             if args.dry_run:
@@ -54,8 +61,9 @@ def main() -> int:
                 session.rollback()
                 raise
         with Session(engine) as verification:
-            second = plan_runtime_relocation(verification, roots, inspect_files=not args.skip_file_check)
-            if second.changes or second.unresolved:
+            second = plan_runtime_relocation(verification, roots, inspect_files=not args.skip_file_check,
+                                             missing_source_allowances=allowances)
+            if second.changes or second.unresolved or second.missing_targets:
                 raise ValueError("post-apply relocation is not idempotent")
             report["semantic_after"] = _semantic_report(semantic_snapshot(verification))
             report["idempotent"] = True

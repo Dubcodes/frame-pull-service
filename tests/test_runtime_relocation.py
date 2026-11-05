@@ -14,8 +14,8 @@ from frame_pull_service.models import (
 from frame_pull_service.services.discovery import discover_recordings, recording_fingerprint
 from frame_pull_service.services.paths import resolve_recording_source
 from frame_pull_service.services.relocation import (
-    RelocationRoots, apply_runtime_relocation, map_approved_path, plan_runtime_relocation,
-    semantic_snapshot,
+    MissingSourceAllowance, RelocationRoots, apply_runtime_relocation, build_missing_source_manifest,
+    load_missing_source_manifest, map_approved_path, plan_runtime_relocation, semantic_snapshot,
 )
 
 
@@ -143,6 +143,33 @@ class RuntimeRelocationTests(unittest.TestCase):
             plan = plan_runtime_relocation(session, self.roots)
             self.assertTrue(any("size conflicts" in item.reason for item in plan.unresolved))
             self.assertFalse(any(item.table == "recordings" for item in plan.changes))
+
+    def test_known_allowlisted_missing_source_relocates_and_is_idempotent(self):
+        self.source.unlink()
+        allowance=MissingSourceAllowance(self.ids[0],"abc.ts",len(b"same-recording"),"physical_source_unavailable")
+        with self.sessions() as session:
+            before=semantic_snapshot(session);plan=plan_runtime_relocation(session,self.roots,missing_source_allowances={self.ids[0]:allowance})
+            self.assertEqual(plan.missing_targets,[]);self.assertEqual(plan.allowed_missing_sources,[allowance])
+            apply_runtime_relocation(session,plan,self.roots);self.assertEqual(semantic_snapshot(session),before);session.commit()
+        with self.sessions() as session:
+            second=plan_runtime_relocation(session,self.roots,missing_source_allowances={self.ids[0]:allowance})
+            self.assertEqual(second.changes,[]);self.assertEqual(second.unresolved,[]);self.assertEqual(second.missing_targets,[])
+
+    def test_unknown_missing_source_still_blocks_apply(self):
+        self.source.unlink()
+        with self.sessions() as session:
+            plan=plan_runtime_relocation(session,self.roots)
+            self.assertEqual(len([item for item in plan.missing_targets if item.table=="recordings"]),1)
+            with self.assertRaisesRegex(ValueError,"missing recording sources"): apply_runtime_relocation(session,plan,self.roots)
+
+    def test_generated_manifest_is_exact_and_loadable(self):
+        self.source.unlink()
+        manifest_path=self.root/"missing.json"
+        with self.sessions() as session: document=build_missing_source_manifest(session,self.new_source)
+        import json
+        manifest_path.write_text(json.dumps(document),encoding="utf-8")
+        loaded=load_missing_source_manifest(manifest_path)
+        self.assertEqual(list(loaded),[self.ids[0]]);self.assertEqual(loaded[self.ids[0]].filename,"abc.ts")
 
     def test_authoritative_resolver_ignores_stale_stored_host_path(self):
         with self.sessions() as session:

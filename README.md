@@ -90,8 +90,25 @@ python scripts/relocate_runtime_state.py \
   --new-source-root /recordings \
   --old-data-root 'J:\projects\frame-pull-service\data' \
   --new-data-root /data \
+  --missing-source-manifest /srv/frame-pull/migration/missing-sources.json \
   --dry-run
 ```
+
+Generate that manifest on the stopped Windows runtime from exact database rows:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\generate_missing_source_manifest.py `
+  --database data\frame_pull.db `
+  --source-root J:\frame-pull\trackside_recordings `
+  --output data\backups\v211-missing-sources.json
+```
+
+The versioned manifest binds each disposition to recording ID, filename, and
+expected byte size. Relocation accepts only `physical_source_unavailable` rows
+whose identity exactly matches the database. An unlisted missing source, stale
+manifest row, present file marked missing, size collision, or external path
+still blocks apply. No media is fabricated and queue, editorial, evidence, and
+history state remain unchanged.
 
 Review every unresolved or missing path, then repeat with `--apply`. Apply is
 transactional, preserves queue/editorial semantics, and verifies that a second
@@ -99,11 +116,27 @@ run is idempotent. Unknown external paths and missing recording sources block
 apply. Normal source access resolves `settings.source_dir / recording.filename`
 with containment and identity checks instead of trusting a persisted host path.
 
-The V2.10 development-side audit found 30 pre-existing missing source files,
-including 18 held queued recordings. These are not included in the runtime
-export and must be recovered or explicitly resolved before target relocation
-can pass. The target Linux host has not yet been supplied or qualified; no real
-job may be released.
+The V2.10 audit found 30 pre-existing missing source files: 18 held queued, 11
+complete, and one failed. Their exact generated manifest is the only supported
+migration disposition. The 18 held jobs remain held and must never be released
+while their physical sources are unavailable.
+
+### Production backup, restart, and historical ingest
+
+With processing paused and no active job, create a consistent export using
+`scripts/export_runtime_state.py` against the host data directory, copy it
+off-host, and verify every SHA-256 in `export_manifest.json`. Preserve source
+recordings separately. Restart with
+`docker compose --env-file /srv/frame-pull/.env restart`, then verify health,
+queue counts, review state, recorder recovery, and that no paused job claimed.
+Compose uses `restart: unless-stopped`; Docker itself must be enabled at boot.
+
+Feed historical drives into this same installation in explicit batches:
+inventory the drive, select a bounded batch, copy to canonical
+`/srv/frame-pull/recordings`, verify size (preferably SHA-256), allow normal
+discovery, and queue only explicit recording IDs. Keep external/archive-drive
+originals until an independent retention decision. Production source deletion
+does not authorize deleting an archive-drive copy.
 
 ## Windows development / historical qualification
 
@@ -132,8 +165,9 @@ unchanged for the stability window, and are then eligible for automatic queueing
 
 `data/` is generated runtime state and is gitignored. It contains the SQLite
 WAL database, service-owned job work, evidence packages, clips and approved
-portraits. Source recordings are never copied, changed or deleted. No API
-accepts arbitrary filesystem paths.
+portraits. Processing never changes source recordings. Automatic lifecycle
+deletion is off by default and is the sole bounded exception described below.
+No API accepts arbitrary filesystem paths.
 
 Every authenticated interview creates an evidence package with a manifest,
 seekable H.264 clip, poster, and preserved candidate portraits. OCR trust and
@@ -234,6 +268,24 @@ configured lead/tail minutes; it reports an incomplete schedule rather than
 guessing. The source lifecycle is disabled by default and rechecks containment,
 stable/closed state, jobs, review/export, retention, and evidence artifacts
 immediately before any delete.
+
+### Automatic source lifecycle
+
+The web watcher inspects at most
+`FRAME_PULL_SOURCE_LIFECYCLE_SWEEP_LIMIT` recordings per cycle and advances a
+cursor. Each candidate is rechecked immediately before unlinking; one failure
+is rolled back and logged without stopping discovery or later candidates. A
+successful deletion writes a durable audit row. A completed detector run with
+zero interviews has no review, export, evidence, or portrait work, so those
+universal gates are true; the complete-job, closed, retention, containment,
+queue, and enablement gates still apply.
+
+`GET /api/operations/source-lifecycle` reports settings, blocker counts, last
+sweep, and recent deletion audits without filesystem paths. `/api/health` also
+reports recordings/data free bytes, recording and queue counts, pending
+reviews/exports, and deletion-eligible sources. Leave deletion disabled until
+a disposable isolated production-format recording passes the deletion canary;
+automatic deletion must not be the only defense against a full disk.
 
 ## Race-day intelligence (V2.3)
 

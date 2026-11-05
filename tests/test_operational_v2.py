@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -12,12 +13,12 @@ from fastapi.testclient import TestClient
 from frame_pull_service.config import Settings
 from frame_pull_service.db import create_db_engine, init_db, make_session_factory
 from frame_pull_service.main import create_app
-from frame_pull_service.models import Candidate, Interview, InterviewRevision, Job, JobStatus, ProcessingRun, RaceDay, Recording, RecordingStatus, ReviewEvent, ReviewStatus
+from frame_pull_service.models import Candidate, Interview, InterviewRevision, Job, JobStatus, ProcessingRun, RaceDay, Recording, RecordingStatus, ReviewEvent, ReviewStatus, SourceDeletionAudit
 from frame_pull_service.services.groups import list_groups
 from frame_pull_service.services.operations import get_value, seed_settings, update_settings
 from frame_pull_service.services.queue import cancel_queued, claim_next_job, queue_selected, set_jobs_released
 from frame_pull_service.services.race_days import attach_recording_to_race_day, parse_recording_filename
-from frame_pull_service.services.source_lifecycle import deletion_eligibility
+from frame_pull_service.services.source_lifecycle import deletion_eligibility, source_lifecycle_status, sweep_source_lifecycle
 
 
 class OperationalV2Tests(unittest.TestCase):
@@ -87,6 +88,35 @@ class OperationalV2Tests(unittest.TestCase):
         rid=self.record()
         with self.sessions() as session:
             rec=session.get(Recording,rid);job=Job(recording_id=rid,status=JobStatus.COMPLETE);session.add(job);session.commit();result=deletion_eligibility(session,self.settings,rec);self.assertFalse(result["safe_to_delete"]);self.assertFalse(result["checks"]["deletion_enabled"])
+
+    def test_zero_interview_complete_job_is_vacuously_editorially_complete(self):
+        rid=self.record()
+        with self.sessions() as session:
+            session.add(Job(recording_id=rid,status=JobStatus.COMPLETE));update_settings(session,{"source_deletion_enabled":True,"source_retention_hours":0})
+            result=deletion_eligibility(session,self.settings,session.get(Recording,rid))
+            self.assertTrue(result["safe_to_delete"]);self.assertTrue(result["checks"]["review_complete"]);self.assertTrue(result["checks"]["export_complete"]);self.assertTrue(result["checks"]["evidence_present"])
+
+    def test_bounded_sweep_deletes_eligible_source_and_audits_without_paths(self):
+        first=self.record();second=self.record("trackside_20260921-0850_022.ts")
+        with self.sessions() as session:
+            session.add_all([Job(recording_id=first,status=JobStatus.COMPLETE),Job(recording_id=second,status=JobStatus.COMPLETE)]);update_settings(session,{"source_deletion_enabled":True,"source_retention_hours":0})
+            result=sweep_source_lifecycle(session,self.settings,limit=1)
+            self.assertEqual(result["inspected"],1);self.assertEqual(result["deleted"],1);self.assertEqual(session.query(SourceDeletionAudit).count(),1)
+            status=source_lifecycle_status(session,self.settings)
+            self.assertEqual(status["counts"]["missing_source"],1);self.assertNotIn(str(self.root),str(status))
+
+    def test_sweep_isolates_one_candidate_unlink_failure(self):
+        first=self.record();second=self.record("trackside_20260921-0850_022.ts")
+        with self.sessions() as session:
+            session.add_all([Job(recording_id=first,status=JobStatus.COMPLETE),Job(recording_id=second,status=JobStatus.COMPLETE)]);update_settings(session,{"source_deletion_enabled":True,"source_retention_hours":0})
+            original_unlink=Path.unlink
+            calls={"count":0}
+            def fail_once(path, *args, **kwargs):
+                calls["count"] += 1
+                if calls["count"] == 1: raise OSError("simulated deletion failure")
+                return original_unlink(path, *args, **kwargs)
+            with patch.object(Path,"unlink",fail_once): result=sweep_source_lifecycle(session,self.settings,limit=2)
+            self.assertEqual(result["failed"],1);self.assertEqual(result["deleted"],1);self.assertEqual(session.query(SourceDeletionAudit).count(),1)
 
     def test_bridge_requires_token_when_configured_and_no_paths(self):
         settings=Settings(source_dir=self.source,data_dir=self.root/'bridge-data',database_url=f"sqlite:///{(self.root/'bridge.sqlite').as_posix()}",bridge_token="secret")
