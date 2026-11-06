@@ -176,6 +176,32 @@ class RecorderTests(unittest.TestCase):
             self.assertEqual(state.active_path, second.resolve())
             self.assertEqual(state.active_chunk_sequence, 2)
 
+    def test_active_chunk_tracking_excludes_files_present_before_session_start(self):
+        class RunningProcess:
+            pid = 76126
+            stdin = BytesIO()
+            stderr = BytesIO()
+            returncode = None
+            def poll(self): return self.returncode
+            def terminate(self): self.returncode = -15
+
+        prior = self.output / "trackside_20990101-0000_00.ts"
+        prior.write_bytes(b"historical")
+        process = RunningProcess()
+        with self.sessions() as session:
+            row = RecordingSession(status="recording", adapter_name="ffmpeg", ffmpeg_pid=process.pid,
+                                   recorder_owner_id=self.recorder.runtime_instance_id, started_at=datetime.now())
+            session.add(row); session.commit()
+            self.recorder._children[process.pid] = process
+            self.recorder._session_baselines[process.pid] = {prior.resolve()}
+            state = self.recorder.refresh(session)
+            self.assertIsNone(state.active_path)
+            current = self.output / "trackside_20261106-1200_00.ts"
+            current.write_bytes(b"current")
+            state = self.recorder.refresh(session)
+            self.assertEqual(state.active_path, current.resolve())
+            self.assertEqual(state.active_chunk_sequence, 1)
+
     def test_trackside_profile_requires_headers_and_explicit_program(self):
         self.settings.recorder_profile = "trackside_hls"
         with self.sessions() as session:

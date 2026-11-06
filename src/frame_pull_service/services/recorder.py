@@ -88,6 +88,7 @@ class FFmpegRecorder(RecorderAdapter):
         self._disk_usage = disk_usage
         self._children: dict[int, subprocess.Popen] = {}
         self._log_threads: dict[int, threading.Thread] = {}
+        self._session_baselines: dict[int, set[Path]] = {}
         self.runtime_instance_id = runtime_instance_id or uuid.uuid4().hex
 
     def _owned_process(self, row: RecordingSession) -> subprocess.Popen | None:
@@ -243,10 +244,11 @@ class FFmpegRecorder(RecorderAdapter):
         finally:
             process.stderr.close()
 
-    def _latest_chunk(self) -> Path | None:
+    def _latest_chunk(self, exclude: set[Path] | None = None) -> Path | None:
         output = self.settings.resolved_recorder_output_dir
         try:
-            chunks = [path for path in output.glob("trackside_*.ts") if path.is_file()]
+            excluded = exclude or set()
+            chunks = [path for path in output.glob("trackside_*.ts") if path.is_file() and path.resolve() not in excluded]
             return max(chunks, key=lambda item: item.stat().st_mtime, default=None)
         except OSError:
             return None
@@ -283,6 +285,7 @@ class FFmpegRecorder(RecorderAdapter):
         session.add(row)
         session.flush()
         command = self._command(chunk_minutes)
+        baseline = {path.resolve() for path in output.glob("trackside_*.ts") if path.is_file()}
         try:
             log = Path(row.log_path)
             log.parent.mkdir(parents=True, exist_ok=True)
@@ -295,6 +298,7 @@ class FFmpegRecorder(RecorderAdapter):
             raise RuntimeError("FFmpeg recorder could not be started.") from exc
         row.status, row.ffmpeg_pid = "recording", process.pid
         self._children[process.pid] = process
+        self._session_baselines[process.pid] = baseline
         thread = threading.Thread(target=self._drain_log, args=(process, log), daemon=True, name=f"recorder-log-{process.pid}")
         self._log_threads[process.pid] = thread
         thread.start()
@@ -317,6 +321,7 @@ class FFmpegRecorder(RecorderAdapter):
         exit_code = process.poll()
         if exit_code is not None:
             self._children.pop(process.pid, None)
+            self._session_baselines.pop(process.pid, None)
             thread = self._log_threads.pop(process.pid, None)
             if thread:
                 thread.join(timeout=2)
@@ -337,7 +342,8 @@ class FFmpegRecorder(RecorderAdapter):
         if free is not None and free < minimum:
             row.error_summary = f"Free disk space fell below the {minimum:g} GB recorder threshold."
             return self.stop(session)
-        newest = self._latest_chunk()
+        baseline = self._session_baselines.get(process.pid)
+        newest = self._latest_chunk(baseline) if baseline is not None else self._latest_chunk()
         previous = Path(row.active_path) if row.active_path else None
         if newest and newest != previous:
             row.active_path = str(newest.resolve())
