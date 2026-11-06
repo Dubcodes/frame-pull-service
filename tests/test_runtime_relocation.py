@@ -137,6 +137,22 @@ class RuntimeRelocationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unresolved"):
                 apply_runtime_relocation(session, plan, self.roots)
 
+    def test_slash_prefixed_ocr_text_is_not_treated_as_an_external_path(self):
+        with self.sessions() as session:
+            revision = session.get(InterviewRevision, self.ids[4])
+            revision.manifest = {"ocr_text": "/ BY I IE I"}
+            session.commit()
+            plan = plan_runtime_relocation(session, self.roots)
+            self.assertEqual(plan.unresolved, [])
+
+    def test_genuine_posix_json_path_outside_roots_is_reported(self):
+        with self.sessions() as session:
+            revision = session.get(InterviewRevision, self.ids[4])
+            revision.manifest = {"artifact": "/opt/external/file with spaces.jpg"}
+            session.commit()
+            plan = plan_runtime_relocation(session, self.roots)
+            self.assertTrue(any(item.value == "/opt/external/file with spaces.jpg" for item in plan.unresolved))
+
     def test_source_size_collision_is_not_accepted(self):
         self.source.write_bytes(b"different")
         with self.sessions() as session:

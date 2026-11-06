@@ -338,7 +338,7 @@ def _rewrite_json(value: Any, roots: RelocationRoots) -> tuple[Any, int, list[st
             mapped, count, issues = _rewrite_json(item, roots)
             rewritten.append(mapped); found += count; unresolved.extend(issues)
         return rewritten, found, unresolved
-    if not isinstance(value, str) or URL.match(value) or API_PATH.match(value) or not _is_absolute(value):
+    if not isinstance(value, str) or not _is_json_path_candidate(value):
         return value, 0, []
     found = 1 if WINDOWS_ABSOLUTE.match(value) else 0
     for old_root, new_root in ((roots.old_source, roots.new_source), (roots.old_data, roots.new_data)):
@@ -348,6 +348,22 @@ def _rewrite_json(value: Any, roots: RelocationRoots) -> tuple[Any, int, list[st
     if _is_within(value, roots.new_source) or _is_within(value, roots.new_data):
         return value, found, []
     return value, found, [value]
+
+
+def _is_json_path_candidate(value: str) -> bool:
+    """Distinguish stored paths from slash-prefixed OCR/transcript text.
+
+    A leading slash followed by whitespace cannot name a normal absolute path
+    component in this application's runtime data, but it does occur in legacy
+    OCR evidence. Windows paths remain unambiguous, and genuine POSIX paths
+    (including paths containing spaces after the first component) are still
+    audited.
+    """
+    if URL.match(value) or API_PATH.match(value):
+        return False
+    if WINDOWS_ABSOLUTE.match(value):
+        return True
+    return PurePosixPath(value).is_absolute() and not re.match(r"^/\s", value)
 
 
 def _validate_relocated_rows(session: Session, roots: RelocationRoots) -> None:
