@@ -736,3 +736,57 @@
 - All 74 Windows source recordings remain present (139,839,797,312 bytes).
   No source has been deleted and no backlog job has been released.
 
+
+## V2.11 Linux production deployment checkpoint (qualified; backlog not started)
+
+- Moxxie is the authoritative Docker runtime. The canonical host layout is
+  `/srv/storage/frame-pull/{data,recordings,legacy}` and the Compose checkout is
+  `/srv/storage/projects/frame-pull-service`. The database and media are on the
+  local ext4 root filesystem. Containers run as UID/GID 10001; the worker has a
+  read-only recordings mount. Image `frame-pull-service:local` resolved to
+  `sha256:89a3e9751bf1298a9df7ab596178d07cc3351802a2d305ddca0a04d921fba038`.
+- The 74-file transfer verified exact filename and byte-size equality at
+  139,839,797,312 bytes. Representative Windows/Linux SHA-256 values matched,
+  including `trackside_20260816-1237_016.ts` at
+  `83fdd0a8abc164029c0c29eb5f6c9ae1c1b6e53301b4abeeb6ec265fd8630c5d`.
+  Windows originals remain untouched.
+- Relocation applied 2,065 path changes using the exact 30-row missing-source
+  manifest, with zero unresolved paths or missing targets. Queue/editorial
+  semantics were unchanged and a second dry run reported zero changes.
+- Web, historical review media, authenticated Bridge access, and paused worker
+  behavior passed. The Linux canary and three-job endurance gate completed with
+  exactly one explicit input per detector invocation and no container restart,
+  SQLite lock, FFmpeg/Tesseract failure, or source mutation.
+- The live HLS recorder passed a bounded 60-second rollover qualification. A
+  startup bug that could associate a historical file with the new session was
+  fixed by excluding the per-process baseline file set. The production-format
+  chunk then completed a normal brand-new held/release/claim job with its source
+  hash, size, and mtime unchanged.
+- Automatic deletion passed in a completely isolated runtime for both a
+  complete zero-interview job and a complete approved/exported interview. The
+  normal watcher retained sources before retention/review/export gates, deleted
+  only after every gate, wrote two audits, and preserved the database, evidence,
+  and approved portrait.
+- Production now uses source deletion enabled, 168-hour retention, review and
+  export gates enabled, autoqueue enabled, concurrency one, and processing
+  paused. Automatic Race Day mode remains disabled because no current
+  7 November calendar record or planned window is available.
+- The first production lifecycle walk predicted and deleted exactly seven
+  retained zero-interview sources, in bounded batches, with seven audits and no
+  failures. The audited total is 11,596,086,112 bytes. Each has an exact-size
+  Windows original among the unchanged 74-file canonical Windows set.
+- Phase 22 did not release work: all 18 ordinary held jobs reference the exact
+  known missing-source set, while the only source-present held job is prohibited
+  duplicate-history job 93. Final queue state is 19 held, zero released, zero
+  active, 90 complete, eight failed, and one stale.
+- A Compose restart preserved semantic fingerprint
+  `03641fa09dc6b61344488bba6a67020e0f67fd40cc4d717c9f6aa0ea751c4a2b`,
+  queue/review state, seven deletion audits, and the closed recorder session.
+  Web returned healthy, worker returned, and two claim intervals produced no
+  detector, FFmpeg, duplicate claim, or accidental recorder restart.
+- Current operational counts are 107 recording rows, 100 processing runs, 305
+  interviews, 839 candidates, one approved interview, and 303 pending reviews.
+  Free local space after qualified deletions is approximately 214 GiB.
+- Historical-drive ingest must follow the documented inventory, duplicate
+  detection, verified copy, discovery, and service-queue procedure. Archive
+  originals remain out of scope for production source deletion.
