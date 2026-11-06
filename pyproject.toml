@@ -24,6 +24,9 @@ dev = ["httpx>=0.27,<1"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+frame_pull_service = ["web/static/*", "web/templates/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
