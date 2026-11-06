@@ -11,9 +11,9 @@ from frame_pull_service.db import create_db_engine, init_db, make_session_factor
 from frame_pull_service.models import CalendarMeeting, CalendarRace, Interview, RaceDay, Recording, RecordingStatus
 from frame_pull_service.services.calendar import (CalendarMeetingPayload, CalendarProviderError,
     CalendarRacePayload, CalendarRunner, LoveRacingCalendarProvider, RaceCalendarProvider,
-    discover_meeting_urls, parse_meeting_html, refresh_race_day)
+    discover_meeting_urls, parse_meeting_html, refresh_race_day, sync_race_days)
 from frame_pull_service.services.operations import seed_settings, update_settings
-from frame_pull_service.services.orchestrator import RaceDayOrchestrator, closed_chunk_eligible, planned_recording_window
+from frame_pull_service.services.orchestrator import RaceDayOrchestrator, closed_chunk_eligible, planned_day_recording_window, planned_recording_window
 from frame_pull_service.services.recorder import RecorderAdapter
 from frame_pull_service.services.context import resolve_interview_context
 
@@ -53,6 +53,26 @@ class CalendarAndOrchestrationTests(unittest.TestCase):
         parsed = parse_meeting_html('<h1>Race Meeting for Example Club at Cambridge on 21 September 2026</h1><div>Race 3 Feature 2:30pm</div>', 'https://loveracing.nz/RaceInfo/1/Meeting-Overview.aspx')
         self.assertEqual(parsed.track, "Cambridge"); self.assertEqual(parsed.race_date, date(2026, 9, 21)); self.assertEqual(parsed.races[0].scheduled_time, datetime(2026, 9, 21, 14, 30, tzinfo=ZoneInfo("Pacific/Auckland")))
 
+    def test_current_fields_table_exposes_authoritative_start_times(self):
+        html = '''<h1>Race Meeting for Waikato Thoroughbred Racing at Te Rapa on 7 November 2026</h1>
+        <table><tr><th>Race</th><th>Start</th><th>Name</th></tr>
+        <tr><td>1</td><td>12:53 pm</td><td>Opening Race</td></tr>
+        <tr><td>2</td><td>1:28 pm</td><td>Second Race</td></tr></table>'''
+        parsed = parse_meeting_html(html,"https://loveracing.nz/RaceInfo/55987/Meeting-Overview.aspx")
+        self.assertEqual([race.scheduled_time.hour for race in parsed.races],[12,13])
+        self.assertEqual(parsed.races[0].name,"Opening Race")
+
+    def test_bounded_sync_creates_today_and_preserves_real_provider_schedule(self):
+        payload = CalendarMeetingPayload("Te Rapa","https://example.test",date(2026,11,7),[
+            CalendarRacePayload(1,"Race",datetime(2026,11,7,12,53,tzinfo=ZoneInfo("Pacific/Auckland")))])
+        class Provider(RaceCalendarProvider):
+            name="loveracing"
+            def meetings_for_day(self, race_date): return [payload] if race_date == date(2026,11,7) else []
+        with self.sessions() as session:
+            result=sync_race_days(session,Provider(),date(2026,11,7),days=2)
+            self.assertEqual(result["days"],2)
+            self.assertIsNotNone(session.query(RaceDay).filter_by(race_date=date(2026,11,7)).one_or_none())
+
     def test_parse_meeting_preserves_labeled_runner_context_without_guessing_jdt(self):
         html = '''<h1>Race Meeting for Example Club at Cambridge on 21 September 2026</h1><div>Race 3 Feature 2:30pm</div>
         <table><tr><th>#</th><th>Horse</th><th>Jockey</th><th>Trainer</th></tr><tr><td>4</td><td>Clear Winner</td><td>A Rider</td><td>T Trainer</td></tr></table>'''
@@ -68,6 +88,21 @@ class CalendarAndOrchestrationTests(unittest.TestCase):
             session.add(CalendarMeeting(race_day_id=day.id, track="Riccarton")); session.flush(); meeting = session.query(CalendarMeeting).one(); session.add(CalendarRace(meeting_id=meeting.id, race_number=1, scheduled_time=datetime(2026, 9, 21, 12, 20))); session.commit()
             plan = planned_recording_window(session, day); self.assertEqual(plan.start, datetime(2026, 9, 21, 11, 30, tzinfo=ZoneInfo("Pacific/Auckland"))); self.assertEqual(plan.end, datetime(2026, 9, 21, 12, 50, tzinfo=ZoneInfo("Pacific/Auckland")))
             update_settings(session, {"automatic_race_day_mode": True}); self.assertEqual(RaceDayOrchestrator(RecorderAdapter()).tick(session, day)["state"], "recorder_unconfigured")
+
+    def test_day_plan_aggregates_multiple_meetings_and_uses_latest_end(self):
+        with self.sessions() as session:
+            day=session.get(RaceDay,self.day_id)
+            first=CalendarMeeting(race_day_id=day.id,track="Te Rapa"); second=CalendarMeeting(race_day_id=day.id,track="Riccarton")
+            session.add_all([first,second]);session.flush()
+            session.add_all([
+                CalendarRace(meeting_id=first.id,race_number=1,scheduled_time=datetime(2026,9,21,12,0)),
+                CalendarRace(meeting_id=first.id,race_number=8,scheduled_time=datetime(2026,9,21,16,0)),
+                CalendarRace(meeting_id=second.id,race_number=1,scheduled_time=datetime(2026,9,21,11,30)),
+                CalendarRace(meeting_id=second.id,race_number=10,scheduled_time=datetime(2026,9,21,17,20)),
+            ]);session.commit()
+            plan=planned_day_recording_window(session,day.race_date)
+            self.assertEqual(plan.start,datetime(2026,9,21,10,40,tzinfo=ZoneInfo("Pacific/Auckland")))
+            self.assertEqual(plan.end,datetime(2026,9,21,17,50,tzinfo=ZoneInfo("Pacific/Auckland")))
 
     def test_active_chunk_never_qualifies_and_closed_chunk_requires_stability(self):
         path = self.root / "hour.ts"; path.write_bytes(b"x" * 100)

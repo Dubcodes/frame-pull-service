@@ -21,6 +21,7 @@ from frame_pull_service.services.legacy_engine import LegacySubprocessEngine
 from frame_pull_service.services.media import clip_bounds, contained_clip_bounds, create_clip, extract_frame, ffprobe_duration
 from frame_pull_service.services.manifests import write_manifest
 from frame_pull_service.services.normalizer import interview_key
+from frame_pull_service.services.operations import update_settings
 from frame_pull_service.services.paths import artifact_path, contained_path, relative_artifact, source_path
 from frame_pull_service.services.queue import claim_next_job, queue_recording, recover_stale_jobs, set_jobs_released
 from frame_pull_service.services.review import approve, capture_frame, reject, refresh_manifest, save_review, select_candidate
@@ -69,6 +70,26 @@ class QualificationCase(unittest.TestCase):
         with self.sessions() as db: discover_recordings(db,self.settings)
         self.add_recording('new.ts')
         with self.sessions() as db: discover_recordings(db,self.settings);new=db.query(Recording).filter_by(filename='new.ts').one();job=db.query(Job).one();self.assertFalse(new.historical);self.assertEqual(new.status,RecordingStatus.QUEUED);self.assertFalse(job.released_for_processing);self.assertEqual(db.query(Job).count(),1)
+
+    def test_auto_release_applies_only_to_first_autoqueued_new_recording(self):
+        self.add_recording('old.ts')
+        with self.sessions() as db:
+            discover_recordings(db,self.settings)
+            update_settings(db,{"autoqueue_closed_recordings":True,"auto_release_new_recordings":True,"processing_paused":True})
+        self.add_recording('new.ts')
+        with self.sessions() as db:
+            discover_recordings(db,self.settings); job=db.query(Job).one()
+            self.assertTrue(job.released_for_processing)
+            self.assertIsNone(claim_next_job(db,max_concurrent=1,paused=True))
+            claimed=claim_next_job(db,max_concurrent=1,paused=False)
+            self.assertEqual(claimed.id,job.id)
+
+    def test_enabling_auto_release_never_releases_existing_held_job(self):
+        with self.sessions() as db:
+            record=Recording(filename='held.ts',source_path='held',fingerprint='held',size_bytes=100,mtime_epoch=1,status=RecordingStatus.READY)
+            db.add(record);db.flush();job=queue_recording(db,record);db.commit()
+            update_settings(db,{"auto_release_new_recordings":True})
+            self.assertFalse(db.get(Job,job.id).released_for_processing)
 
     def test_unstable_new_file_waits(self):
         self.add_recording('old.ts')

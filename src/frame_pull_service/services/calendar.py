@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import urljoin
@@ -90,6 +90,29 @@ class _RaceTableParser(HTMLParser):
             self._cells = None
 
 
+class _ScheduleTableParser(HTMLParser):
+    """Extract authoritative race number/time/name cells from current fields tables."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._cells: list[str] | None = None
+        self._cell_parts: list[str] | None = None
+        self._in_cell = False
+    def handle_starttag(self, tag, _attrs):
+        if tag == "tr": self._cells = []
+        elif tag in {"td", "th"} and self._cells is not None:
+            self._cell_parts = []; self._in_cell = True
+    def handle_data(self, data):
+        value = " ".join(unescape(data).split())
+        if value and self._in_cell and self._cell_parts is not None: self._cell_parts.append(value)
+    def handle_endtag(self, tag):
+        if tag in {"td", "th"} and self._in_cell:
+            self._cells.append(" ".join(self._cell_parts or [])); self._cell_parts = None; self._in_cell = False
+        elif tag == "tr" and self._cells is not None:
+            if self._cells: self.rows.append(self._cells)
+            self._cells = None
+
+
 def _table_runners(html: str) -> dict[int, list[CalendarRunner]]:
     parser = _RaceTableParser(); parser.feed(html)
     headers: dict[int, list[str]] = {}; runners: dict[int, list[CalendarRunner]] = {}
@@ -152,11 +175,24 @@ def parse_meeting_html(html: str, source_url: str) -> CalendarMeetingPayload:
     if not track: raise CalendarProviderError("LoveRacing meeting did not expose a trustworthy track name")
     races: list[CalendarRacePayload] = []
     runners = _table_runners(html)
+    schedule = _ScheduleTableParser(); schedule.feed(html)
+    for cells in schedule.rows:
+        number_match = next((match for cell in cells if (match := re.fullmatch(r"\s*(\d{1,2})\s*", cell))), None)
+        time_index = next((index for index, cell in enumerate(cells) if _parse_time(cell, race_date)), None)
+        if not number_match or time_index is None: continue
+        number = int(number_match.group(1)); scheduled = _parse_time(cells[time_index], race_date)
+        name = next((cell.strip() for cell in cells[time_index + 1:] if cell.strip()), None)
+        races.append(CalendarRacePayload(race_number=number, name=name, scheduled_time=scheduled,
+                                         source_url=source_url, runners=runners.get(number, [])))
     for match in re.finditer(r"\bRace\s+(\d{1,2})\b([^\n]{0,240})", text, re.I):
         number, detail = int(match.group(1)), match.group(2)
         name = re.sub(r"\b\d{1,2}:\d{2}\s*(?:[ap]m)?\b.*$", "", detail, flags=re.I).strip(" -:") or None
         races.append(CalendarRacePayload(race_number=number, name=name, scheduled_time=_parse_time(detail, race_date), source_url=source_url, runners=runners.get(number, [])))
-    unique = {race.race_number: race for race in races}
+    unique: dict[int, CalendarRacePayload] = {}
+    for race in races:
+        current = unique.get(race.race_number)
+        if current is None or (current.scheduled_time is None and race.scheduled_time is not None):
+            unique[race.race_number] = race
     if not unique: raise CalendarProviderError("LoveRacing meeting did not expose any races")
     return CalendarMeetingPayload(track=track, source_url=source_url, race_date=race_date, races=[unique[key] for key in sorted(unique)])
 
@@ -215,3 +251,16 @@ def refresh_race_day(session: Session, race_day: RaceDay, provider: RaceCalendar
         session.commit(); return {"ok": False, "provider": provider.name, "error": str(exc), "meetings": len(existing), "preserved_cache": bool(existing)}
     for payload in meetings: upsert_meeting_context(session, race_day.id, payload)
     session.commit(); return {"ok": True, "provider": provider.name, "meetings": len(meetings), "preserved_cache": False}
+
+
+def sync_race_days(session: Session, provider: RaceCalendarProvider, start: date, *, days: int = 2) -> dict:
+    """Create and refresh a bounded current/future set without fabricating schedule data."""
+    results = []
+    for offset in range(max(1, min(int(days), 7))):
+        race_date = start + timedelta(days=offset)
+        item = session.execute(select(RaceDay).where(RaceDay.race_date == race_date)).scalar_one_or_none()
+        if item is None:
+            item = RaceDay(race_date=race_date, label=f"{race_date:%A} {race_date.day} {race_date:%B %Y}")
+            session.add(item); session.commit()
+        results.append({"race_day_id": item.id, "date": race_date.isoformat(), **refresh_race_day(session, item, provider)})
+    return {"start": start.isoformat(), "days": len(results), "results": results}

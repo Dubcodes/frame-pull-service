@@ -4,8 +4,9 @@ import asyncio
 import logging
 import shutil
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
@@ -16,7 +17,7 @@ from sqlalchemy import func, select
 from . import __version__
 from .config import Settings, get_settings
 from .db import create_db_engine, init_db, make_session_factory
-from .models import AppearanceGroup, Candidate, Interview, InterviewRevision, Job, JobStatus, RaceDay, Recording, ReviewEvent, ReviewStatus
+from .models import AppearanceGroup, CalendarMeeting, Candidate, Interview, InterviewRevision, Job, JobStatus, RaceDay, Recording, ReviewEvent, ReviewStatus
 from .schemas import CaptureFrameRequest, RejectRequest, ReviewPatch, SelectCandidateRequest
 from .services.discovery import discover_recordings
 from .services.cleanup import cleanup_plan
@@ -28,9 +29,9 @@ from .services.operations import get_value, seed_settings, settings_view, update
 from .services.race_days import backfill_race_days, list_race_days, race_day_summary
 from .services.groups import acknowledge_group_export, acknowledge_interview_export, group_view, list_groups, sync_groups
 from .services.source_lifecycle import deletion_eligibility, source_lifecycle_status, sweep_source_lifecycle
-from .services.calendar import LoveRacingCalendarProvider, refresh_race_day
+from .services.calendar import LoveRacingCalendarProvider, refresh_race_day, sync_race_days
 from .services.context import refresh_race_day_contexts, resolve_interview_context
-from .services.orchestrator import RaceDayOrchestrator, planned_recording_window
+from .services.orchestrator import RaceDayOrchestrator, planned_day_recording_window, planned_recording_window
 from .services.recorder import FFmpegRecorder
 
 
@@ -55,6 +56,8 @@ class ServiceState:
         self.watcher_task: asyncio.Task | None = None
         self.source_lifecycle_cursor = 0
         self.source_lifecycle_last_result: dict | None = None
+        self.calendar_last_sync_at: datetime | None = None
+        self.calendar_last_sync_result: dict | None = None
 
 
 def serialize_recording(recording: Recording, timezone: str = "Pacific/Auckland") -> dict:
@@ -96,12 +99,24 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
         async def watch() -> None:
             while True:
                 await asyncio.sleep(state.settings.discovery_interval_seconds)
+                now_local = datetime.now(ZoneInfo(state.settings.broadcast_timezone))
+                try:
+                    with state.sessions() as session:
+                        cadence = timedelta(minutes=max(5, int(get_value(session, "calendar_refresh_minutes", 60))))
+                        due = state.calendar_last_sync_at is None or now_local - state.calendar_last_sync_at >= cadence
+                        if bool(get_value(session, "calendar_auto_refresh", False)) and due:
+                            future_hours = max(0, int(get_value(session, "calendar_future_refresh_hours", 24)))
+                            days = min(7, 1 + ((future_hours + 23) // 24))
+                            state.calendar_last_sync_result = sync_race_days(
+                                session, LoveRacingCalendarProvider(), now_local.date(), days=days
+                            )
+                            state.calendar_last_sync_at = now_local
+                except Exception:
+                    LOG.exception("periodic calendar synchronization failed")
                 try:
                     with state.sessions() as session:
                         state.recorder.refresh(session)
-                        today = datetime.now().date()
-                        for item in session.execute(select(RaceDay).where(RaceDay.race_date == today)).scalars():
-                            state.race_day_orchestrator.tick(session, item)
+                        state.race_day_orchestrator.tick_day(session, now_local.date(), now=now_local)
                         discover_recordings(session, state.settings)
                 except Exception:
                     # Discovery is best-effort; a temporary filesystem error must
@@ -296,6 +311,27 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             result = refresh_race_day(session, item, LoveRacingCalendarProvider())
             if result["ok"]: result["contexts_refreshed"] = refresh_race_day_contexts(session, item.id, state.settings.broadcast_timezone)
             return result
+
+    @app.post("/api/calendar/sync")
+    def sync_calendar(body: dict | None = None) -> dict:
+        now_local = datetime.now(ZoneInfo(state.settings.broadcast_timezone))
+        days = max(1, min(int((body or {}).get("days", 2)), 7))
+        with state.sessions() as session:
+            result = sync_race_days(session, LoveRacingCalendarProvider(), now_local.date(), days=days)
+            state.calendar_last_sync_at = now_local
+            state.calendar_last_sync_result = result
+            return result
+
+    @app.get("/api/calendar/today-plan")
+    def today_plan() -> dict:
+        now_local = datetime.now(ZoneInfo(state.settings.broadcast_timezone))
+        with state.sessions() as session:
+            plan = planned_day_recording_window(session, now_local.date())
+            meetings = session.execute(
+                select(CalendarMeeting).join(RaceDay).where(RaceDay.race_date == now_local.date()).order_by(CalendarMeeting.track)
+            ).scalars().all()
+            return {"date": now_local.date(), "now": now_local, "meetings": [item.track for item in meetings],
+                    "recording_plan": plan.__dict__, "last_sync": state.calendar_last_sync_result}
 
     @app.get("/api/recordings/{recording_id}/deletion-eligibility")
     def source_eligibility(recording_id: int) -> dict:

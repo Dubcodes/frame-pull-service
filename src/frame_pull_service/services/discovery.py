@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..models import Recording, RecordingSession, RecordingStatus
+from ..models import Job, Recording, RecordingSession, RecordingStatus
 from .operations import get_value
 from .race_days import attach_recording_to_race_day
 
@@ -16,6 +16,21 @@ from .race_days import attach_recording_to_race_day
 def recording_fingerprint(path: Path, stat) -> str:
     material = f"{path.name}|{stat.st_size}|{stat.st_mtime_ns}".encode("utf-8")
     return hashlib.sha256(material).hexdigest()[:32]
+
+
+def _autoqueue_new_recording(session: Session, settings: Settings, record: Recording) -> bool:
+    """Queue only a genuinely new normal recording and optionally release that new job.
+
+    Existing queue history is an absolute boundary: enabling auto-release never
+    changes an older held, failed, stale, reprocess, or duplicate-history job.
+    """
+    if record.historical or session.execute(select(Job.id).where(Job.recording_id == record.id).limit(1)).first():
+        return False
+    from .queue import queue_recording
+    job = queue_recording(session, record)
+    if bool(get_value(session, "auto_release_new_recordings", False)):
+        job.released_for_processing = True
+    return True
 
 
 def discover_recordings(session: Session, settings: Settings, now: datetime | None = None) -> dict:
@@ -60,9 +75,7 @@ def discover_recordings(session: Session, settings: Settings, now: datetime | No
             session.flush(); attach_recording_to_race_day(session, record)
             created += 1
             if status == RecordingStatus.READY and bool(get_value(session, "autoqueue_closed_recordings", settings.auto_queue)):
-                from .queue import queue_recording
-                queue_recording(session, record)
-                queued += 1
+                queued += int(_autoqueue_new_recording(session, settings, record))
             continue
         canonical = str(path.resolve())
         same_location = record.source_path == canonical
@@ -87,9 +100,7 @@ def discover_recordings(session: Session, settings: Settings, now: datetime | No
             record.status = RecordingStatus.READY
             updated += 1
             if bool(get_value(session, "autoqueue_closed_recordings", settings.auto_queue)) and not record.historical:
-                from .queue import queue_recording
-                queue_recording(session, record)
-                queued += 1
+                queued += int(_autoqueue_new_recording(session, settings, record))
     session.commit()
     return {"created": created, "updated": updated, "queued": queued, "conflicts": conflicts,
             "baseline_established": not baseline_exists}

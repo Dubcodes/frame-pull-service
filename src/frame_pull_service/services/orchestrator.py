@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import select
@@ -23,12 +23,17 @@ class RecordingPlan:
 
 
 def planned_recording_window(session: Session, race_day: RaceDay) -> RecordingPlan:
+    return planned_day_recording_window(session, race_day.race_date)
+
+
+def planned_day_recording_window(session: Session, race_date: date) -> RecordingPlan:
     times = [
         in_broadcast_timezone(value)
         for value in session.execute(
             select(CalendarRace.scheduled_time)
             .join(CalendarMeeting)
-            .where(CalendarMeeting.race_day_id == race_day.id, CalendarRace.scheduled_time.is_not(None))
+            .join(RaceDay, RaceDay.id == CalendarMeeting.race_day_id)
+            .where(RaceDay.race_date == race_date, CalendarRace.scheduled_time.is_not(None))
         ).scalars().all()
     ]
     if not times: return RecordingPlan("schedule_incomplete", reason="Race times are unavailable; no fallback window is configured.")
@@ -40,10 +45,15 @@ class RaceDayOrchestrator:
     def __init__(self, recorder: RecorderAdapter): self.recorder = recorder
 
     def tick(self, session: Session, race_day: RaceDay, now: datetime | None = None) -> dict:
+        return self.tick_day(session, race_day.race_date, now=now)
+
+    def tick_day(self, session: Session, race_date: date, now: datetime | None = None) -> dict:
         if not bool(get_value(session, "automatic_race_day_mode", False)):
             return {"state": "disabled", "reason": "Automatic Race Day Mode is off."}
-        plan = planned_recording_window(session, race_day)
+        plan = planned_day_recording_window(session, race_date)
         if plan.state != "planned": return {"state": plan.state, "reason": plan.reason}
+        race_day = session.execute(select(RaceDay).where(RaceDay.race_date == race_date)).scalar_one_or_none()
+        if race_day is None: return {"state": "schedule_incomplete", "reason": "Race day is unavailable."}
         status = self.recorder.refresh(session) if hasattr(self.recorder, "refresh") else self.recorder.status(session)
         if status.health == "unconfigured": return {"state": "recorder_unconfigured", "plan": plan}
         now = in_broadcast_timezone(now or datetime.now())
