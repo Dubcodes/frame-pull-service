@@ -4,6 +4,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -160,7 +161,7 @@ class QualificationCase(unittest.TestCase):
         _,iid,rid,_=self.session_fixture()
         with self.sessions() as db:
             revision=db.get(InterviewRevision,rid);revision.clip_start=10;revision.clip_end=13;Path(revision.manifest_path).write_text('{}');db.commit()
-            with __import__('unittest').mock.patch('frame_pull_service.services.review.extract_frame'):
+            with patch('frame_pull_service.services.review.extract_frame'):
                 candidate=capture_frame(db,self.settings,db.get(Interview,iid),1.25)
             self.assertAlmostEqual(candidate.source_timestamp,11.25)
             self.assertEqual(db.get(Interview,iid).selected_candidate_id,candidate.id)

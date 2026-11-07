@@ -31,3 +31,4 @@ document.querySelector('#stop-after-chunk').onclick=async()=>{await api('/api/re
 document.querySelector('#stop-recorder').onclick=async()=>{if(confirm('Stop recording now? The final chunk will still require stability checks.')){await api('/api/recorder/stop',{method:'POST'});load()}};
 load();setInterval(load,15000);
 document.title='Frame Pull — Race Days';const favicon=document.createElement('link');favicon.rel='icon';favicon.href='/static/favicon.svg';document.head.append(favicon);
+const healthLabel=document.querySelector('#health');new MutationObserver(()=>{if(/^PROCESSING ACTIVE - 0\//.test(healthLabel.textContent))healthLabel.textContent=healthLabel.textContent.replace(/^PROCESSING ACTIVE - 0\/\d+ workers - only /,'PROCESSING READY — worker idle - ')}).observe(healthLabel,{childList:true});

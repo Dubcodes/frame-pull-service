@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from PIL import Image
@@ -17,7 +17,7 @@ from .legacy_engine import LegacyResult
 from .manifests import write_manifest
 from .media import contained_clip_bounds, create_clip, extract_frame, ffprobe_duration
 from .paths import relative_artifact, resolve_recording_source
-from .time_model import recording_end
+from .time_model import broadcast_zone, recording_end
 
 
 def interview_key(recording: str, start: float, end: float) -> str:
@@ -74,7 +74,11 @@ def normalize_run(session: Session, settings: Settings, recording: Recording, pr
     # Persist this immutable result so dashboard reads never need to probe media.
     recording.duration_seconds = duration
     recording.metadata_probed_at = datetime.utcnow()
-    if recording.recording_started_at:
+    if recording.recorder_session_id:
+        stopped = datetime.fromtimestamp(recording.mtime_epoch, UTC).astimezone(broadcast_zone(settings.broadcast_timezone))
+        recording.recording_stopped_at = stopped.replace(tzinfo=None)
+        recording.recording_started_at = (stopped - timedelta(seconds=duration)).replace(tzinfo=None)
+    elif recording.recording_started_at:
         recording.recording_stopped_at = recording_end(recording.recording_started_at, duration).replace(tzinfo=None)
     interviews: list[Interview] = []
     for segment in result.segments.get("segments", []):

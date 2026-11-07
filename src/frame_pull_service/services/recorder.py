@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import os
 import shlex
 import shutil
 import subprocess
@@ -17,10 +18,15 @@ from sqlalchemy.orm import Session
 from ..config import Settings
 from ..models import RecordingSession
 from .operations import get_value
+from .time_model import broadcast_zone
 
 
 ACTIVE_SESSION_STATES = ("recording", "stopping", "finalizing", "uncertain")
 URL_PATTERN = re.compile(r"https?://[^\s'\"]+")
+
+
+def recorder_filename_for(instant: datetime, timezone: str = "Pacific/Auckland") -> str:
+    return instant.astimezone(broadcast_zone(timezone)).strftime("trackside_%Y%m%d-%H%M_%S.ts")
 
 
 def redact_input(value: str) -> str:
@@ -141,6 +147,9 @@ class FFmpegRecorder(RecorderAdapter):
         # actual seconds avoids FFmpeg's incompatible strftime/index expansion
         # while retaining an accurate chunk-start timestamp and unique rolls.
         return self.settings.resolved_recorder_output_dir / "trackside_%Y%m%d-%H%M_%S.ts"
+
+    def _recorder_environment(self) -> dict[str, str]:
+        return {**os.environ, "TZ": self.settings.broadcast_timezone}
 
     def _profile_error(self) -> str | None:
         profile = self.settings.recorder_profile.strip().lower()
@@ -291,7 +300,8 @@ class FFmpegRecorder(RecorderAdapter):
             log.parent.mkdir(parents=True, exist_ok=True)
             with log.open("a", encoding="utf-8") as handle:
                 handle.write(f"{started.isoformat()} recorder start: {self._log_command(command)}\n")
-            process = self._popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, shell=False)
+            process = self._popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                  shell=False, env=self._recorder_environment())
         except OSError as exc:
             row.status, row.error_summary, row.stopped_at = "failed", redact_input(str(exc)), datetime.now()
             session.commit()

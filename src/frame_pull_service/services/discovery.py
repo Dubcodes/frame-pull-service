@@ -18,6 +18,29 @@ def recording_fingerprint(path: Path, stat) -> str:
     return hashlib.sha256(material).hexdigest()[:32]
 
 
+def _recorder_session_for_path(session: Session, path: Path, stat) -> RecordingSession | None:
+    """Conservatively associate a newly observed Trackside file with its recorder session."""
+    if not path.name.lower().startswith("trackside_"):
+        return None
+    written_at = datetime.fromtimestamp(stat.st_mtime)
+    rows = session.execute(
+        select(RecordingSession).where(
+            RecordingSession.adapter_name == "ffmpeg",
+            RecordingSession.started_at.is_not(None),
+        ).order_by(RecordingSession.id.desc())
+    ).scalars()
+    for row in rows:
+        end = written_at if row.status in ("recording", "stopping", "finalizing") else (row.stopped_at or written_at)
+        if row.started_at - timedelta(minutes=2) <= written_at <= end + timedelta(minutes=2):
+            return row
+    return None
+
+
+def _terminal_fragment(record: Recording, owner: RecordingSession | None, stat, stable_by_age: bool, settings: Settings) -> bool:
+    return bool(owner and owner.status == "closed" and stable_by_age
+                and stat.st_size < settings.min_input_bytes and record.recorder_session_id == owner.id)
+
+
 def _autoqueue_new_recording(session: Session, settings: Settings, record: Recording) -> bool:
     """Queue only a genuinely new normal recording and optionally release that new job.
 
@@ -64,13 +87,19 @@ def discover_recordings(session: Session, settings: Settings, now: datetime | No
         fingerprint = recording_fingerprint(path, stat)
         record = session.execute(select(Recording).where(Recording.filename == path.name)).scalar_one_or_none()
         stability_seconds = int(get_value(session, "file_stability_seconds", settings.stable_for_seconds))
-        stable = stat.st_size >= settings.min_input_bytes and (now.timestamp() - stat.st_mtime) >= stability_seconds
+        stable_by_age = (now.timestamp() - stat.st_mtime) >= stability_seconds
+        stable = stat.st_size >= settings.min_input_bytes and stable_by_age
         if record is None:
+            owner = _recorder_session_for_path(session, path, stat)
             historical = not baseline_exists and not settings.queue_existing_on_first_run
             status = RecordingStatus.HISTORICAL if historical else (RecordingStatus.READY if stable else RecordingStatus.WAITING)
             record = Recording(filename=path.name, source_path=str(path.resolve()), fingerprint=fingerprint,
                                size_bytes=stat.st_size, mtime_epoch=stat.st_mtime, historical=historical,
-                               stable_at=now if stable else None, is_closed=stable, status=status)
+                               stable_at=now if stable else None, is_closed=stable, status=status,
+                               recorder_session_id=owner.id if owner else None)
+            if not historical and _terminal_fragment(record, owner, stat, stable_by_age, settings):
+                record.status, record.stable_at, record.is_closed = RecordingStatus.IGNORED, now, True
+                status = RecordingStatus.IGNORED
             session.add(record)
             session.flush(); attach_recording_to_race_day(session, record)
             created += 1
@@ -78,6 +107,9 @@ def discover_recordings(session: Session, settings: Settings, now: datetime | No
                 queued += int(_autoqueue_new_recording(session, settings, record))
             continue
         canonical = str(path.resolve())
+        owner = session.get(RecordingSession, record.recorder_session_id) if record.recorder_session_id else _recorder_session_for_path(session, path, stat)
+        if owner and record.recorder_session_id is None:
+            record.recorder_session_id = owner.id
         same_location = record.source_path == canonical
         same_identity = record.fingerprint == fingerprint or (
             record.size_bytes == stat.st_size and abs(record.mtime_epoch - stat.st_mtime) <= 0.001
@@ -93,6 +125,9 @@ def discover_recordings(session: Session, settings: Settings, now: datetime | No
             if record.status not in (RecordingStatus.PROCESSING, RecordingStatus.COMPLETE):
                 record.status = RecordingStatus.WAITING
                 record.stable_at = None
+            updated += 1
+        elif _terminal_fragment(record, owner, stat, stable_by_age, settings) and record.status in (RecordingStatus.DISCOVERED, RecordingStatus.WAITING):
+            record.stable_at, record.is_closed, record.status = now, True, RecordingStatus.IGNORED
             updated += 1
         elif stable and record.status in (RecordingStatus.DISCOVERED, RecordingStatus.WAITING):
             record.stable_at = now

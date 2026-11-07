@@ -5,7 +5,7 @@ import tempfile
 import time
 import unittest
 from io import BytesIO
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -19,7 +19,7 @@ from frame_pull_service.services.discovery import discover_recordings
 from frame_pull_service.services.operations import seed_settings, update_settings
 from frame_pull_service.services.orchestrator import RaceDayOrchestrator, planned_recording_window
 from frame_pull_service.services.queue import claim_next_job
-from frame_pull_service.services.recorder import FFmpegRecorder, RecorderAdapter, RecorderState, redact_input
+from frame_pull_service.services.recorder import FFmpegRecorder, RecorderAdapter, RecorderState, recorder_filename_for, redact_input
 
 
 class RecorderTests(unittest.TestCase):
@@ -109,6 +109,29 @@ class RecorderTests(unittest.TestCase):
         self.assertNotIn("secret", logged)
         self.assertNotIn("private", logged)
         self.assertNotIn("origin.example.test", logged)
+
+    def test_recorder_filename_timezone_covers_nzdt_nzst_and_cross_midnight(self):
+        self.assertEqual(recorder_filename_for(datetime(2026, 1, 1, 0, 0, tzinfo=UTC)), "trackside_20260101-1300_00.ts")
+        self.assertEqual(recorder_filename_for(datetime(2026, 7, 1, 0, 0, tzinfo=UTC)), "trackside_20260701-1200_00.ts")
+        self.assertEqual(recorder_filename_for(datetime(2026, 1, 1, 11, 30, tzinfo=UTC)), "trackside_20260102-0030_00.ts")
+        self.assertEqual(self.recorder._recorder_environment()["TZ"], "Pacific/Auckland")
+
+    def test_closed_recorder_terminal_fragment_is_ignored_but_external_small_file_waits(self):
+        self.settings.min_input_bytes = 100
+        terminal = self.output / "trackside_20261107-1749_00.ts"; terminal.write_bytes(b"terminal")
+        external = self.output / "external-small.ts"; external.write_bytes(b"external")
+        stamp = terminal.stat().st_mtime
+        with self.sessions() as session:
+            session.add(Recording(filename="baseline.ts", source_path="baseline", fingerprint="baseline", size_bytes=1,
+                                  mtime_epoch=0, status=RecordingStatus.HISTORICAL))
+            session.add(RecordingSession(status="closed", adapter_name="ffmpeg",
+                                         started_at=datetime.fromtimestamp(stamp) - timedelta(hours=1),
+                                         stopped_at=datetime.fromtimestamp(stamp) + timedelta(seconds=1)))
+            session.commit(); discover_recordings(session, self.settings, datetime.fromtimestamp(stamp) + timedelta(seconds=10))
+            tail = session.query(Recording).filter_by(filename=terminal.name).one()
+            other = session.query(Recording).filter_by(filename=external.name).one()
+            self.assertEqual(tail.status, RecordingStatus.IGNORED); self.assertTrue(tail.is_closed); self.assertIsNotNone(tail.recorder_session_id)
+            self.assertEqual(other.status, RecordingStatus.WAITING); self.assertIsNone(other.recorder_session_id)
 
     def test_trackside_profile_uses_bounded_eof_reconnect_and_sanitizes_runtime_log(self):
         self.settings.recorder_profile = "trackside_hls"

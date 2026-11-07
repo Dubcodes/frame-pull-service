@@ -15,6 +15,7 @@ x-frame-pull-common: &frame-pull-common
     FRAME_PULL_LEGACY_EXAMPLES_DIR: /legacy/examples/manual_profile_screenshots
     FRAME_PULL_HOST: 0.0.0.0
     FRAME_PULL_PORT: 8094
+    TZ: ${FRAME_PULL_BROADCAST_TIMEZONE:-Pacific/Auckland}
   init: true
   restart: unless-stopped
   stop_grace_period: 10m
