@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     recorder_extra_args: str = ""
     recorder_min_free_space_gb: float = 20.0
     bridge_token: str = ""
+    people_inbox_base_url: str = ""
     database_url: str | None = None
 
     @property

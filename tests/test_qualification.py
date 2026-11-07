@@ -145,6 +145,26 @@ class QualificationCase(unittest.TestCase):
         with self.sessions() as db:
             with self.assertRaises(ValueError): capture_frame(db,self.settings,db.get(Interview,iid),-0.01)
 
+    def test_candidate_api_exposes_authoritative_clip_offset_and_outside_state(self):
+        _,iid,rid,_=self.session_fixture()
+        with self.sessions() as db:
+            revision=db.get(InterviewRevision,rid);revision.clip_start=2210;revision.clip_end=2221.25
+            inside=db.query(Candidate).filter_by(revision_id=rid).one();inside.source_timestamp=2211.4
+            db.add(Candidate(revision_id=rid,rank=2,source_timestamp=2208.4,image_path=inside.image_path,selected=False));db.commit()
+        with TestClient(create_app(self.settings)) as client:
+            rows=client.get(f'/api/interviews/{iid}/candidates').json()
+        self.assertAlmostEqual(rows[0]['clip_time'],1.4);self.assertTrue(rows[0]['in_clip'])
+        self.assertAlmostEqual(rows[1]['clip_time'],-1.6);self.assertFalse(rows[1]['in_clip'])
+
+    def test_capture_source_time_is_clip_start_plus_visible_time_and_selected(self):
+        _,iid,rid,_=self.session_fixture()
+        with self.sessions() as db:
+            revision=db.get(InterviewRevision,rid);revision.clip_start=10;revision.clip_end=13;Path(revision.manifest_path).write_text('{}');db.commit()
+            with __import__('unittest').mock.patch('frame_pull_service.services.review.extract_frame'):
+                candidate=capture_frame(db,self.settings,db.get(Interview,iid),1.25)
+            self.assertAlmostEqual(candidate.source_timestamp,11.25)
+            self.assertEqual(db.get(Interview,iid).selected_candidate_id,candidate.id)
+
     def test_approval_preserves_source_candidate_and_reject_audits(self):
         _,iid,_,cid=self.session_fixture()
         with self.sessions() as db:
@@ -165,6 +185,12 @@ class QualificationCase(unittest.TestCase):
         with TestClient(app) as client:
             self.assertEqual(client.get('/api/health').status_code,200);self.assertEqual(client.get('/').status_code,200);self.assertIn('Frame Pull Service',client.get('/').text);self.assertEqual(client.get('/review').status_code,200);detail=client.get(f'/review/{iid}').text;self.assertIn('Use this frame',detail);self.assertIn('Interview context',detail)
             self.assertEqual(client.get('/api/interviews/9999').status_code,404);self.assertEqual(client.get('/api/interviews/9999/clip').status_code,404);self.assertEqual(client.post('/api/interviews/9999/approve').status_code,404);self.assertEqual(client.post(f'/api/interviews/{iid}/select-candidate',json={'candidate_id':9999}).status_code,404)
+
+    def test_people_inbox_deep_link_is_configurable_and_encoded(self):
+        settings=self.settings.model_copy(update={'people_inbox_base_url':'http://people.internal:8090/'})
+        with TestClient(create_app(settings)) as client:
+            row=client.get('/api/integrations/people-inbox',params={'name':'Ryan Foote','track':'Te Rapa'}).json()
+        self.assertTrue(row['configured']);self.assertEqual(row['url'],'http://people.internal:8090/frame-pull?name=Ryan+Foote&track=Te+Rapa&state=ready')
 
     def test_media_helpers_with_synthetic_audio_and_silent_video(self):
         audio=self.root/'audio.mp4';silent=self.root/'silent.mp4';

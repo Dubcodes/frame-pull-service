@@ -30,3 +30,4 @@ document.querySelector('#start-recorder').onclick=()=>window.startRecorder(null)
 document.querySelector('#stop-after-chunk').onclick=async()=>{await api('/api/recorder/stop-after-chunk',{method:'POST'});load()};
 document.querySelector('#stop-recorder').onclick=async()=>{if(confirm('Stop recording now? The final chunk will still require stability checks.')){await api('/api/recorder/stop',{method:'POST'});load()}};
 load();setInterval(load,15000);
+document.title='Frame Pull — Race Days';const favicon=document.createElement('link');favicon.rel='icon';favicon.href='/static/favicon.svg';document.head.append(favicon);

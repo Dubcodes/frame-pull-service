@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+from urllib.parse import urlencode
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -359,6 +360,14 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     def appearance_groups(race_day_id: int | None = None) -> list[dict]:
         with state.sessions() as session: return list_groups(session, race_day_id)
 
+    @app.get("/api/integrations/people-inbox")
+    def people_inbox_link(name: str = "", track: str = "", state_filter: str = "ready") -> dict:
+        base = state.settings.people_inbox_base_url.rstrip("/")
+        if not base:
+            return {"configured": False, "url": None}
+        query = urlencode({key: value for key, value in {"name": name, "track": track, "state": state_filter}.items() if value})
+        return {"configured": True, "url": f"{base}/frame-pull?{query}"}
+
     @app.post("/api/appearance-groups/{group_id}/select-candidate")
     def select_group_candidate(group_id: int, body: dict) -> dict:
         with state.sessions() as session:
@@ -414,7 +423,11 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     def candidates(interview_id: int) -> list[dict]:
         with state.sessions() as session:
             item=get_interview(session, interview_id); revision=session.get(InterviewRevision, item.active_revision_id)
-            return [{"id": c.id, "rank": c.rank, "source_timestamp": c.source_timestamp, "source": c.source, "selected": c.selected, "url": f"/api/interviews/{item.id}/candidates/{c.id}"} for c in revision.candidates]
+            return [{"id": c.id, "rank": c.rank, "source_timestamp": c.source_timestamp,
+                     "clip_time": round(c.source_timestamp - revision.clip_start, 6),
+                     "in_clip": revision.clip_start <= c.source_timestamp <= revision.clip_end,
+                     "source": c.source, "selected": c.selected,
+                     "url": f"/api/interviews/{item.id}/candidates/{c.id}"} for c in revision.candidates]
 
     @app.post("/api/interviews/{interview_id}/select-candidate")
     def choose(interview_id: int, body: SelectCandidateRequest) -> dict:
@@ -430,7 +443,9 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
         with state.sessions() as session:
             try: candidate=capture_frame(session, state.settings, get_interview(session, interview_id), body.clip_time); session.commit()
             except ValueError as exc: raise HTTPException(400, str(exc))
-            return {"candidate_id": candidate.id, "source_timestamp": candidate.source_timestamp}
+            revision = session.get(InterviewRevision, candidate.revision_id)
+            return {"candidate_id": candidate.id, "source_timestamp": candidate.source_timestamp,
+                    "clip_time": candidate.source_timestamp - revision.clip_start, "in_clip": True}
 
     @app.patch("/api/interviews/{interview_id}/review")
     def patch_review(interview_id: int, body: ReviewPatch) -> dict:
@@ -524,8 +539,8 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             group = session.get(AppearanceGroup, group_id)
             if not group: raise HTTPException(404, "group portrait not found")
             view = group_view(session, group)
-            if not view["preferred_candidate_id"]: raise HTTPException(404, "group portrait not found")
-            candidate = session.get(Candidate, view["preferred_candidate_id"]); revision = session.get(InterviewRevision, candidate.revision_id)
+            if not view["bridge_candidate_id"]: raise HTTPException(404, "group portrait not found")
+            candidate = session.get(Candidate, view["bridge_candidate_id"]); revision = session.get(InterviewRevision, candidate.revision_id)
             return media(revision.interview_id, "candidate", candidate.id)
 
     @app.post("/api/bridge/v1/groups/{group_id}/mark-exported", dependencies=[Depends(require_bridge)])
@@ -550,6 +565,8 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     def settings_page(request: Request): return templates.TemplateResponse(request, "settings.html", {})
     @app.get("/review", response_class=HTMLResponse)
     def review_queue(request: Request): return templates.TemplateResponse(request, "queue.html", {})
+    @app.get("/review/people/{group_id}", response_class=HTMLResponse)
+    def review_group(request: Request, group_id: int): return templates.TemplateResponse(request, "group.html", {"group_id": group_id})
     @app.get("/review/{interview_id}", response_class=HTMLResponse)
     def review_detail(request: Request, interview_id: int): return templates.TemplateResponse(request, "detail.html", {"interview_id": interview_id})
     return app

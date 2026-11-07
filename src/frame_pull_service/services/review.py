@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..models import Candidate, Interview, InterviewRevision, Recording, ReviewEvent, ReviewStatus
+from ..models import AppearanceGroup, Candidate, Interview, InterviewRevision, Recording, ReviewEvent, ReviewStatus
 from .media import extract_frame
 from .manifests import write_manifest
 from .paths import resolve_data_artifact, resolve_recording_source
@@ -58,6 +58,10 @@ def select_candidate(session: Session, interview: Interview, candidate: Candidat
     for item in session.query(Candidate).filter(Candidate.revision_id == candidate.revision_id):
         item.selected = item.id == candidate.id
     interview.selected_candidate_id = candidate.id
+    if interview.appearance_group_id:
+        group = session.get(AppearanceGroup, interview.appearance_group_id)
+        if group is not None:
+            group.preferred_candidate_id = candidate.id
     event(session, interview, "candidate_selected", {"candidate_id": candidate.id, "source": candidate.source})
     refresh_manifest(session, interview)
 

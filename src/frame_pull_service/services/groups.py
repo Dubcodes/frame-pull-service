@@ -48,11 +48,20 @@ def group_view(session: Session, group: AppearanceGroup) -> dict:
         revision = session.get(InterviewRevision, item.active_revision_id) if item.active_revision_id else None
         if revision:
             candidates.extend(revision.candidates)
+    member_by_revision = {item.active_revision_id: item for item in members if item.active_revision_id}
+    preferred = session.get(Candidate, group.preferred_candidate_id) if group.preferred_candidate_id else None
+    if preferred is not None and preferred.revision_id not in member_by_revision: preferred = None
+    if preferred is None:
+        selected_ids = {item.selected_candidate_id for item in members if item.selected_candidate_id}
+        preferred = next((item for item in candidates if item.id in selected_ids), None)
+    if preferred is None and candidates:
+        preferred = min(candidates, key=lambda item: (item.rank, item.id))
+    preferred_owner = member_by_revision.get(preferred.revision_id) if preferred else None
     approved = [item for item in members if item.review_status == ReviewStatus.APPROVED and item.selected_candidate_id]
     approved_candidate_ids = {item.selected_candidate_id for item in approved}
-    preferred = session.get(Candidate, group.preferred_candidate_id) if group.preferred_candidate_id in approved_candidate_ids else None
-    if preferred is None:
-        preferred = next((item for item in candidates if item.id in approved_candidate_ids), None)
+    bridge_candidate = preferred if preferred and preferred.id in approved_candidate_ids else next(
+        (item for item in candidates if item.id in approved_candidate_ids), None
+    )
     fallback_interview = members[0] if members else None
     roles = sorted({item.final_role for item in members if item.final_role})
     member_contexts = [resolve_interview_context(session, item) for item in members]
@@ -69,11 +78,14 @@ def group_view(session: Session, group: AppearanceGroup) -> dict:
     return {"id": group.id, "race_day_id": group.race_day_id, "name": group.display_name, "interview_ids": [item.id for item in members],
             "interview_count": len(members), "candidate_count": len(candidates), "track": location,
             "location_state": location_state, "location_confidence": group.location_confidence, "preferred_candidate_id": preferred.id if preferred else None,
-            "portrait_url": f"/api/bridge/v1/groups/{group.id}/portrait" if preferred else None,
-            "holding_url": f"/api/interviews/{fallback_interview.id}/candidates/{preferred.id}" if preferred else (f"/api/interviews/{fallback_interview.id}/poster" if fallback_interview else None),
+            "portrait_url": f"/api/bridge/v1/groups/{group.id}/portrait" if bridge_candidate else None,
+            "bridge_candidate_id": bridge_candidate.id if bridge_candidate else None,
+            "holding_url": f"/api/interviews/{preferred_owner.id}/candidates/{preferred.id}" if preferred and preferred_owner else (f"/api/interviews/{fallback_interview.id}/poster" if fallback_interview else None),
             "review_status": "approved" if approved else "pending", "export_state": export_state,
             "roles": roles, "interviews": [{"id": item.id, "role": item.final_role, "track": item.final_track,
-            "source_start": item.source_start, "source_end": item.source_end, "calendar_context": context}
+            "source_start": item.source_start, "source_end": item.source_end, "review_status": item.review_status.value,
+            "candidate_count": len(session.get(InterviewRevision, item.active_revision_id).candidates) if item.active_revision_id else 0,
+            "calendar_context": context}
             for item, context in zip(members, member_contexts)]}
 
 

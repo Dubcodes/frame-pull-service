@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from frame_pull_service.config import Settings
 from frame_pull_service.db import create_db_engine, init_db, make_session_factory
 from frame_pull_service.main import create_app
-from frame_pull_service.models import Candidate, Interview, InterviewRevision, Job, JobStatus, ProcessingRun, RaceDay, Recording, RecordingStatus, ReviewEvent, ReviewStatus, SourceDeletionAudit
+from frame_pull_service.models import AppearanceGroup, Candidate, Interview, InterviewRevision, Job, JobStatus, ProcessingRun, RaceDay, Recording, RecordingStatus, ReviewEvent, ReviewStatus, SourceDeletionAudit
 from frame_pull_service.services.groups import list_groups
 from frame_pull_service.services.operations import get_value, seed_settings, update_settings
 from frame_pull_service.services.queue import cancel_queued, claim_next_job, queue_selected, set_jobs_released
@@ -83,6 +83,18 @@ class OperationalV2Tests(unittest.TestCase):
             rec=session.get(Recording,rid);run=ProcessingRun(recording_id=rid,run_key="run-test",job_dir="x",status="complete");session.add(run);session.flush()
             known=Interview(interview_key="known",recording_id=rid,source_start=1,source_end=2,bounds_basis="test",final_name="Alex Smith",review_status=ReviewStatus.PENDING);unknown=Interview(interview_key="unknown",recording_id=rid,source_start=3,source_end=4,bounds_basis="test",review_status=ReviewStatus.PENDING);session.add_all([known,unknown]);session.flush()
             revision=InterviewRevision(interview_id=known.id,processing_run_id=run.id,revision_number=1,trusted_name=None,clip_start=0,clip_end=1,clip_path="x",poster_path="x",manifest_path="x");session.add(revision);session.flush();candidate=Candidate(revision_id=revision.id,rank=1,source_timestamp=1,image_path="x",selected=True);session.add(candidate);session.flush();known.active_revision_id=revision.id;known.selected_candidate_id=candidate.id;session.commit();groups=list_groups(session);self.assertEqual(len(groups),1);self.assertEqual(groups[0]["name"],"Alex Smith");self.assertEqual(groups[0]["candidate_count"],1)
+
+    def test_group_preferred_candidate_url_uses_owning_interview_and_bridge_stays_approval_gated(self):
+        rid=self.record()
+        with self.sessions() as session:
+            run=ProcessingRun(recording_id=rid,run_key='group-url',job_dir='x',status='complete');session.add(run);session.flush();candidates=[]
+            for n in (1,2):
+                interview=Interview(interview_key=f'person-{n}',recording_id=rid,source_start=n,source_end=n+1,bounds_basis='test',final_name='Alex Smith',review_status=ReviewStatus.PENDING);session.add(interview);session.flush()
+                revision=InterviewRevision(interview_id=interview.id,processing_run_id=run.id,revision_number=1,clip_start=0,clip_end=3,clip_path='x',poster_path='x',manifest_path='x');session.add(revision);session.flush()
+                candidate=Candidate(revision_id=revision.id,rank=n,source_timestamp=n,image_path='x',selected=False);session.add(candidate);session.flush();interview.active_revision_id=revision.id;candidates.append((interview.id,candidate.id))
+            session.commit();group=list_groups(session)[0];row=session.get(AppearanceGroup,group['id']);row.preferred_candidate_id=candidates[1][1];session.commit();view=list_groups(session)[0]
+            self.assertEqual(view['holding_url'],f'/api/interviews/{candidates[1][0]}/candidates/{candidates[1][1]}')
+            self.assertEqual(view['preferred_candidate_id'],candidates[1][1]);self.assertIsNone(view['portrait_url']);self.assertIsNone(view['bridge_candidate_id'])
 
     def test_source_deletion_disabled_blocks_even_completed_source(self):
         rid=self.record()
