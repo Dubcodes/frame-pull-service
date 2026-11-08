@@ -185,6 +185,9 @@ class QualificationCase(unittest.TestCase):
         _,iid,_,cid=self.session_fixture();app=create_app(self.settings)
         with TestClient(app) as client:
             self.assertEqual(client.get('/api/health').status_code,200);self.assertEqual(client.get('/').status_code,200);self.assertIn('Frame Pull Service',client.get('/').text);self.assertEqual(client.get('/review').status_code,200);detail=client.get(f'/review/{iid}').text;self.assertIn('Use this frame',detail);self.assertIn('Interview context',detail)
+            group_page=client.get('/review/people/1').text;self.assertNotIn('<video',group_page);self.assertIn('id="interview-cards"',group_page);self.assertIn('No portrait candidates yet',group_page)
+            group_script=(Path(__file__).resolve().parents[1]/'src'/'frame_pull_service'/'web'/'static'/'group.js').read_text()
+            self.assertIn('href="/review/${item.id}"',group_script);self.assertNotIn('/clip',group_script)
             self.assertEqual(client.get('/api/interviews/9999').status_code,404);self.assertEqual(client.get('/api/interviews/9999/clip').status_code,404);self.assertEqual(client.post('/api/interviews/9999/approve').status_code,404);self.assertEqual(client.post(f'/api/interviews/{iid}/select-candidate',json={'candidate_id':9999}).status_code,404)
 
     def test_people_inbox_deep_link_is_configurable_and_encoded(self):

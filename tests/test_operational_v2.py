@@ -95,6 +95,19 @@ class OperationalV2Tests(unittest.TestCase):
             session.commit();group=list_groups(session)[0];row=session.get(AppearanceGroup,group['id']);row.preferred_candidate_id=candidates[1][1];session.commit();view=list_groups(session)[0]
             self.assertEqual(view['holding_url'],f'/api/interviews/{candidates[1][0]}/candidates/{candidates[1][1]}')
             self.assertEqual(view['preferred_candidate_id'],candidates[1][1]);self.assertIsNone(view['portrait_url']);self.assertIsNone(view['bridge_candidate_id'])
+            self.assertEqual([item['id'] for item in view['interviews']],[candidates[0][0],candidates[1][0]])
+            self.assertEqual([item['poster_url'] for item in view['interviews']],[f'/api/interviews/{candidates[0][0]}/poster',f'/api/interviews/{candidates[1][0]}/poster'])
+            self.assertTrue(all(item['clip_duration']==3 for item in view['interviews']))
+
+    def test_zero_candidate_group_uses_poster_and_keeps_interview_metadata(self):
+        rid=self.record()
+        with self.sessions() as session:
+            run=ProcessingRun(recording_id=rid,run_key='zero-group',job_dir='x',status='complete');session.add(run);session.flush()
+            interview=Interview(interview_key='anthony',recording_id=rid,source_start=2,source_end=4,bounds_basis='test',final_name='Anthony Burton',review_status=ReviewStatus.PENDING);session.add(interview);session.flush()
+            revision=InterviewRevision(interview_id=interview.id,processing_run_id=run.id,revision_number=1,clip_start=1,clip_end=5,clip_path='clip',poster_path='poster',manifest_path='manifest');session.add(revision);session.flush();interview.active_revision_id=revision.id;session.commit()
+            view=next(item for item in list_groups(session) if item['name']=='Anthony Burton')
+            self.assertEqual(view['candidate_count'],0);self.assertEqual(view['holding_url'],f'/api/interviews/{interview.id}/poster')
+            self.assertEqual(view['interviews'][0]['candidate_count'],0);self.assertEqual(view['interviews'][0]['clip_duration'],4)
 
     def test_source_deletion_disabled_blocks_even_completed_source(self):
         rid=self.record()

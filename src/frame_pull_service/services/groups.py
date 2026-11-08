@@ -84,6 +84,8 @@ def group_view(session: Session, group: AppearanceGroup) -> dict:
             "review_status": "approved" if approved else "pending", "export_state": export_state,
             "roles": roles, "interviews": [{"id": item.id, "role": item.final_role, "track": item.final_track,
             "source_start": item.source_start, "source_end": item.source_end, "review_status": item.review_status.value,
+            "poster_url": f"/api/interviews/{item.id}/poster" if item.active_revision_id else None,
+            "clip_duration": round(session.get(InterviewRevision, item.active_revision_id).clip_end - session.get(InterviewRevision, item.active_revision_id).clip_start, 3) if item.active_revision_id else 0,
             "candidate_count": len(session.get(InterviewRevision, item.active_revision_id).candidates) if item.active_revision_id else 0,
             "calendar_context": context}
             for item, context in zip(members, member_contexts)]}

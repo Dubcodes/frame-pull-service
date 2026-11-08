@@ -1,1 +1,40 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Person Review · Frame Pull</title><link rel="icon" href="/static/favicon.svg"><link rel="stylesheet" href="/static/app.css"></head><body><header><h1 id="person-name">Person Review</h1><nav><a href="/review">Review queue</a><a href="/">Race days</a></nav></header><main data-group-id="{{ group_id }}" class="group-review"><section class="player"><video id="group-clip" controls preload="metadata"></video><div id="member-tabs" class="toolbar"></div></section><section class="context-panel"><h2>Appearances</h2><div id="appearances"></div></section><section class="wide"><h2>Portrait candidates</h2><p class="muted">Select a portrait for this person. Bridge delivery remains approval-gated.</p><div id="group-candidates" class="candidate-strip"></div><span id="group-state" class="muted"></span></section></main><script src="/static/group.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>Person Review · Frame Pull</title>
+  <link rel="icon" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/group.css">
+</head>
+<body>
+  <header class="person-header">
+    <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/review">Review queue</a><span aria-hidden="true">›</span><strong id="breadcrumb-name">Person</strong></nav>
+    <a href="/review" class="back-link">Back to People</a>
+  </header>
+  <main data-group-id="{{ group_id }}" class="person-overview">
+    <section class="person-summary" aria-labelledby="person-name">
+      <div id="portrait-frame" class="portrait-frame"><span id="portrait-placeholder">No portrait yet</span><img id="person-portrait" hidden alt="Current person portrait"></div>
+      <div class="summary-copy">
+        <p class="eyebrow">Person overview</p>
+        <h1 id="person-name">Loading person…</h1>
+        <dl id="person-facts" class="person-facts"></dl>
+      </div>
+    </section>
+    <section aria-labelledby="interviews-heading">
+      <h2 id="interviews-heading">Interviews</h2>
+      <p class="muted">Open an appearance to review its clip, evidence and portrait timing.</p>
+      <div id="interview-cards" class="interview-grid"></div>
+    </section>
+    <section id="candidate-section" aria-labelledby="candidates-heading">
+      <h2 id="candidates-heading">Portrait candidates</h2>
+      <p class="muted">Choose the current person portrait without leaving this overview.</p>
+      <div id="group-candidates" class="candidate-grid"></div>
+      <p id="no-candidates" class="empty-state" hidden>No portrait candidates yet</p>
+      <span id="group-state" class="muted" aria-live="polite"></span>
+    </section>
+  </main>
+  <script src="/static/group.js"></script>
+</body>
+</html>

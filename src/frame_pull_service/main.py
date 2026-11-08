@@ -77,6 +77,7 @@ def serialize_interview(session, interview: Interview, timezone: str = "Pacific/
             "source_start": interview.source_start, "source_end": interview.source_end, "review_status": interview.review_status.value,
             "export_state": interview.export_state, "final_name": interview.final_name, "final_role": interview.final_role,
             "final_track": interview.final_track, "identity_source": interview.identity_source,
+            "appearance_group_id": interview.appearance_group_id,
             "trusted_name": revision.trusted_name if revision else None, "ocr_name_candidate": revision.ocr_name_candidate if revision else None,
             "ocr_confidence": revision.ocr_confidence if revision else None, "name_trust_reason": revision.name_trust_reason if revision else None,
             "clip_duration": round(revision.clip_end - revision.clip_start, 3) if revision else 0,
@@ -359,6 +360,13 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     @app.get("/api/appearance-groups")
     def appearance_groups(race_day_id: int | None = None) -> list[dict]:
         with state.sessions() as session: return list_groups(session, race_day_id)
+
+    @app.get("/api/appearance-groups/{group_id}")
+    def appearance_group(group_id: int) -> dict:
+        with state.sessions() as session:
+            group = session.get(AppearanceGroup, group_id)
+            if not group: raise HTTPException(404, "appearance group not found")
+            return group_view(session, group)
 
     @app.get("/api/integrations/people-inbox")
     def people_inbox_link(name: str = "", track: str = "", state_filter: str = "ready") -> dict:
