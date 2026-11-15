@@ -206,7 +206,8 @@ class ReliabilityV213Tests(unittest.TestCase):
     def test_archive_frontend_has_chunk_advance_timeline_filters_and_safe_actions(self):
         js = (Path(__file__).resolve().parents[1] / "src" / "frame_pull_service" / "web" / "static" / "race_day.js").read_text()
         html = (Path(__file__).resolve().parents[1] / "src" / "frame_pull_service" / "web" / "templates" / "race_day.html").read_text()
-        self.assertIn("player.addEventListener('ended'", js); self.assertIn("timeline-marker", js)
+        self.assertIn("player.addEventListener('ended'", js); self.assertIn("{prepare:true,autoplay:true}", js)
+        self.assertIn("player.play()", js); self.assertIn("timeline-marker", js)
         self.assertIn("manual-interviews/validate", js); self.assertIn("delete-source", js); self.assertIn("Download original .ts", html)
         self.assertIn("Protect all stored sources", html); self.assertIn("option value=\"unresolved\"", html)
 
