@@ -127,6 +127,15 @@ class SourceDeletionAudit(Base):
     deleted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class SourceProtectionAudit(Base):
+    __tablename__ = "source_protection_audits"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recording_id: Mapped[int] = mapped_column(ForeignKey("recordings.id"), index=True)
+    protected: Mapped[bool] = mapped_column(Boolean)
+    reason: Mapped[str] = mapped_column(String(255), default="operator")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Recording(Base):
     __tablename__ = "recordings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -146,7 +155,37 @@ class Recording(Base):
     metadata_probed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_closed: Mapped[bool] = mapped_column(Boolean, default=False)
     recorder_session_id: Mapped[int | None] = mapped_column(ForeignKey("recording_sessions.id"), nullable=True)
+    source_protected: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     jobs: Mapped[list["Job"]] = relationship(back_populates="recording")
+
+
+class RecordingMediaAudit(Base):
+    __tablename__ = "recording_media_audits"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recording_id: Mapped[int] = mapped_column(ForeignKey("recordings.id"), index=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    tool_version: Mapped[str] = mapped_column(String(255))
+    probe_ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    full_scan_ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    classification: Mapped[str] = mapped_column(String(32), index=True)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    traversed_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    has_video: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_audio: Mapped[bool] = mapped_column(Boolean, default=False)
+    error_count: Mapped[int] = mapped_column(Integer, default=0)
+    summary: Mapped[str] = mapped_column(String(500))
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class PlaybackProxy(Base):
+    __tablename__ = "playback_proxies"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recording_id: Mapped[int] = mapped_column(ForeignKey("recordings.id"), unique=True, index=True)
+    relative_path: Mapped[str] = mapped_column(Text)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    mode: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_accessed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
 class Job(Base):

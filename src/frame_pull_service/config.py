@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     recorder_min_free_space_gb: float = 20.0
     bridge_token: str = ""
     people_inbox_base_url: str = ""
+    playback_cache_max_bytes: int = 20 * 1024 * 1024 * 1024
+    playback_cache_min_free_gb: float = 10.0
+    manual_interview_max_seconds: float = 15 * 60.0
     database_url: str | None = None
 
     @property
@@ -52,7 +55,7 @@ class Settings(BaseSettings):
         return f"sqlite:///{(self.data_dir / 'frame_pull.db').as_posix()}"
 
     def ensure_data_dirs(self) -> None:
-        for path in (self.data_dir, self.data_dir / "jobs", self.data_dir / "interviews", self.data_dir / "logs", self.data_dir / "backups"):
+        for path in (self.data_dir, self.data_dir / "jobs", self.data_dir / "interviews", self.data_dir / "logs", self.data_dir / "backups", self.data_dir / "playback_cache"):
             path.mkdir(parents=True, exist_ok=True)
 
     @property

@@ -29,6 +29,12 @@ DEFAULTS = {
     "require_review_complete_before_delete": True,
     "require_export_before_delete": True,
     "default_review_view": "people",
+    # Enabled only after the first production backfill/qualification so an
+    # upgrade cannot unexpectedly full-scan media during a live race day.
+    "integrity_audit_enabled": False,
+    "integrity_audit_min_recording_id": 0,
+    "playback_cache_max_bytes": 20 * 1024 * 1024 * 1024,
+    "playback_cache_min_free_gb": 10,
 }
 
 
@@ -66,6 +72,12 @@ def update_settings(session: Session, values: dict) -> dict:
         if key == "recorder_chunk_minutes":
             value = max(1.0, float(value))
         if key == "recorder_min_free_space_gb":
+            value = max(0.0, float(value))
+        if key == "integrity_audit_min_recording_id":
+            value = max(0, int(value))
+        if key == "playback_cache_max_bytes":
+            value = max(1, int(value))
+        if key == "playback_cache_min_free_gb":
             value = max(0.0, float(value))
         if key == "default_review_view" and value not in {"people", "interviews"}:
             raise ValueError("default review view must be people or interviews")

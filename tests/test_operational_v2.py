@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from frame_pull_service.config import Settings
 from frame_pull_service.db import create_db_engine, init_db, make_session_factory
 from frame_pull_service.main import create_app
-from frame_pull_service.models import AppearanceGroup, Candidate, Interview, InterviewRevision, Job, JobStatus, ProcessingRun, RaceDay, Recording, RecordingStatus, ReviewEvent, ReviewStatus, SourceDeletionAudit
+from frame_pull_service.models import AppearanceGroup, Candidate, Interview, InterviewRevision, Job, JobStatus, ProcessingRun, RaceDay, Recording, RecordingMediaAudit, RecordingStatus, ReviewEvent, ReviewStatus, SourceDeletionAudit
 from frame_pull_service.services.groups import list_groups
 from frame_pull_service.services.operations import get_value, seed_settings, update_settings
 from frame_pull_service.services.queue import cancel_queued, claim_next_job, queue_selected, set_jobs_released
@@ -35,6 +35,9 @@ class OperationalV2Tests(unittest.TestCase):
         with self.sessions() as session:
             item=Recording(filename=name,source_path=str(path),fingerprint=name,size_bytes=100,mtime_epoch=0,status=status,stable_at=datetime.utcnow(),is_closed=True)
             session.add(item);session.flush();attach_recording_to_race_day(session,item);session.commit();return item.id
+
+    def healthy(self, session, *recording_ids):
+        session.add_all([RecordingMediaAudit(recording_id=recording_id,tool_version="fixture",probe_ok=True,full_scan_ok=True,classification="healthy",duration_seconds=1,has_video=True,has_audio=True,error_count=0,summary="healthy") for recording_id in recording_ids])
 
     def test_settings_defaults_are_safe_and_persist_pause(self):
         with self.sessions() as session:
@@ -117,14 +120,14 @@ class OperationalV2Tests(unittest.TestCase):
     def test_zero_interview_complete_job_is_vacuously_editorially_complete(self):
         rid=self.record()
         with self.sessions() as session:
-            session.add(Job(recording_id=rid,status=JobStatus.COMPLETE));update_settings(session,{"source_deletion_enabled":True,"source_retention_hours":0})
+            session.add(Job(recording_id=rid,status=JobStatus.COMPLETE));self.healthy(session,rid);update_settings(session,{"source_deletion_enabled":True,"source_retention_hours":0})
             result=deletion_eligibility(session,self.settings,session.get(Recording,rid))
             self.assertTrue(result["safe_to_delete"]);self.assertTrue(result["checks"]["review_complete"]);self.assertTrue(result["checks"]["export_complete"]);self.assertTrue(result["checks"]["evidence_present"])
 
     def test_bounded_sweep_deletes_eligible_source_and_audits_without_paths(self):
         first=self.record();second=self.record("trackside_20260921-0850_022.ts")
         with self.sessions() as session:
-            session.add_all([Job(recording_id=first,status=JobStatus.COMPLETE),Job(recording_id=second,status=JobStatus.COMPLETE)]);update_settings(session,{"source_deletion_enabled":True,"source_retention_hours":0})
+            session.add_all([Job(recording_id=first,status=JobStatus.COMPLETE),Job(recording_id=second,status=JobStatus.COMPLETE)]);self.healthy(session,first,second);update_settings(session,{"source_deletion_enabled":True,"source_retention_hours":0})
             result=sweep_source_lifecycle(session,self.settings,limit=1)
             self.assertEqual(result["inspected"],1);self.assertEqual(result["deleted"],1);self.assertEqual(session.query(SourceDeletionAudit).count(),1)
             status=source_lifecycle_status(session,self.settings)
@@ -133,7 +136,7 @@ class OperationalV2Tests(unittest.TestCase):
     def test_sweep_isolates_one_candidate_unlink_failure(self):
         first=self.record();second=self.record("trackside_20260921-0850_022.ts")
         with self.sessions() as session:
-            session.add_all([Job(recording_id=first,status=JobStatus.COMPLETE),Job(recording_id=second,status=JobStatus.COMPLETE)]);update_settings(session,{"source_deletion_enabled":True,"source_retention_hours":0})
+            session.add_all([Job(recording_id=first,status=JobStatus.COMPLETE),Job(recording_id=second,status=JobStatus.COMPLETE)]);self.healthy(session,first,second);update_settings(session,{"source_deletion_enabled":True,"source_retention_hours":0})
             original_unlink=Path.unlink
             calls={"count":0}
             def fail_once(path, *args, **kwargs):

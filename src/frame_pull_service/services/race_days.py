@@ -8,7 +8,10 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import CalendarMeeting, CalendarRace, Interview, Job, JobStatus, RaceDay, Recording, RecordingSession, RecordingStatus, ReviewStatus
+from ..models import CalendarMeeting, CalendarRace, Interview, InterviewRevision, Job, JobStatus, PlaybackProxy, RaceDay, Recording, RecordingSession, RecordingStatus, ReviewStatus
+from .media_audit import latest_media_audit, media_audit_view
+from .paths import resolve_recording_source
+from .playback import playback_proxy_view
 from .time_model import DEFAULT_BROADCAST_TIMEZONE, broadcast_zone, in_broadcast_timezone, iso_broadcast, recording_end
 
 
@@ -105,3 +108,56 @@ def race_day_summary(session: Session, race_day: RaceDay) -> dict:
 
 def list_race_days(session: Session) -> list[dict]:
     return [race_day_summary(session, item) for item in session.execute(select(RaceDay).order_by(RaceDay.race_date.desc())).scalars()]
+
+
+def race_day_archive(session: Session, settings, race_day: RaceDay) -> dict:
+    summary = race_day_summary(session, race_day)
+    records = session.execute(
+        select(Recording).where(Recording.race_day_id == race_day.id).order_by(Recording.recording_started_at, Recording.id)
+    ).scalars().all()
+    health_counts = defaultdict(int)
+    record_rows = []
+    interview_rows = []
+    for record in records:
+        audit = latest_media_audit(session, record.id)
+        audit_view = media_audit_view(audit)
+        health_counts[audit_view["classification"]] += 1
+        try:
+            resolve_recording_source(settings, record, verify_size=True)
+            source_available = True
+        except (ValueError, FileNotFoundError, OSError):
+            source_available = False
+        rows = session.execute(select(Interview).where(Interview.recording_id == record.id).order_by(Interview.source_start)).scalars().all()
+        record_rows.append({
+            "id": record.id, "filename": record.filename, "started_at": iso_broadcast(record.recording_started_at),
+            "stopped_at": iso_broadcast(record.recording_stopped_at), "duration_seconds": record.duration_seconds,
+            "size_bytes": record.size_bytes, "status": record.status.value, "source_available": source_available,
+            "source_protected": record.source_protected, "interview_count": len(rows), "media_audit": audit_view,
+            "playback_proxy": playback_proxy_view(session, settings, record.id),
+        })
+        for interview in rows:
+            revision = session.get(InterviewRevision, interview.active_revision_id) if interview.active_revision_id else None
+            interview_rows.append({
+                "id": interview.id, "recording_id": record.id, "source_start": interview.source_start,
+                "source_end": interview.source_end, "local_time": iso_broadcast(
+                    record.recording_started_at + timedelta(seconds=interview.source_start) if record.recording_started_at else None
+                ),
+                "name": interview.final_name or (revision.trusted_name if revision else None) or (revision.ocr_name_candidate if revision else None),
+                "role": interview.final_role or (revision.role_clean if revision else None),
+                "track": interview.final_track or (revision.track_value if revision else None),
+                "review_status": interview.review_status.value, "export_state": interview.export_state,
+                "has_portrait": bool(interview.selected_candidate_id), "manual": interview.bounds_basis == "manual_operator",
+                "url": f"/review/{interview.id}",
+            })
+    rejected = sum(row["review_status"] == "rejected" for row in interview_rows)
+    exported = sum(row["export_state"] == "exported" for row in interview_rows)
+    manual = sum(row["manual"] for row in interview_rows)
+    summary.update({
+        "total_source_bytes": sum(row["size_bytes"] for row in record_rows if row["source_available"]),
+        "total_source_duration_seconds": sum((row["duration_seconds"] or 0) for row in record_rows if row["source_available"]),
+        "source_available_count": sum(row["source_available"] for row in record_rows),
+        "health": dict(health_counts), "rejected": rejected, "exported": exported,
+        "automated_interviews": len(interview_rows) - manual, "manually_recovered_interviews": manual,
+        "recordings": record_rows, "interview_rows": interview_rows,
+    })
+    return summary

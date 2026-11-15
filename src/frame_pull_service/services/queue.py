@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from ..models import Job, JobStatus, Recording, RecordingStatus
+from ..models import Job, JobStatus, Recording, RecordingMediaAudit, RecordingStatus
 from .operations import get_value
 
 
@@ -31,10 +31,19 @@ def claim_next_job(session: Session, max_concurrent: int = 1, paused: bool | Non
         active = session.scalar(select(func.count()).select_from(Job).where(Job.status == JobStatus.PROCESSING)) or 0
         if active >= max(1, max_concurrent):
             return None
-        job = session.execute(select(Job).where(
+        query = select(Job).where(
             Job.status == JobStatus.QUEUED,
             Job.released_for_processing.is_(True),
-        ).order_by(Job.queued_at, Job.id)).scalars().first()
+        )
+        if bool(get_value(session, "integrity_audit_enabled", False)):
+            latest_audit = select(
+                RecordingMediaAudit.recording_id,
+                func.max(RecordingMediaAudit.id).label("audit_id"),
+            ).group_by(RecordingMediaAudit.recording_id).subquery()
+            query = query.join(latest_audit, latest_audit.c.recording_id == Job.recording_id).join(
+                RecordingMediaAudit, RecordingMediaAudit.id == latest_audit.c.audit_id
+            ).where(RecordingMediaAudit.classification.in_(["healthy", "warning"]))
+        job = session.execute(query.order_by(Job.queued_at, Job.id)).scalars().first()
         if not job:
             return None
         now = datetime.utcnow()

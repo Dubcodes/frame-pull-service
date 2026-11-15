@@ -18,18 +18,21 @@ from sqlalchemy import func, select
 from . import __version__
 from .config import Settings, get_settings
 from .db import create_db_engine, init_db, make_session_factory
-from .models import AppearanceGroup, CalendarMeeting, Candidate, Interview, InterviewRevision, Job, JobStatus, RaceDay, Recording, ReviewEvent, ReviewStatus
+from .models import AppearanceGroup, CalendarMeeting, Candidate, Interview, InterviewRevision, Job, JobStatus, PlaybackProxy, RaceDay, Recording, RecordingMediaAudit, RecordingSession, ReviewEvent, ReviewStatus
 from .schemas import CaptureFrameRequest, RejectRequest, ReviewPatch, SelectCandidateRequest
 from .services.discovery import discover_recordings
 from .services.cleanup import cleanup_plan
-from .services.paths import artifact_path
+from .services.paths import artifact_path, resolve_data_artifact, resolve_recording_source
 from .services.queue import cancel_queued, queue_recording, queue_selected, set_jobs_released
 from .services.review import approve, capture_frame, reject, save_review, select_candidate, refresh_manifest
 from .services.worker import Worker
 from .services.operations import get_value, seed_settings, settings_view, update_settings
-from .services.race_days import backfill_race_days, list_race_days, race_day_summary
+from .services.race_days import backfill_race_days, list_race_days, race_day_archive, race_day_summary
 from .services.groups import acknowledge_group_export, acknowledge_interview_export, group_view, list_groups, sync_groups
-from .services.source_lifecycle import deletion_eligibility, source_lifecycle_status, sweep_source_lifecycle
+from .services.source_lifecycle import delete_if_eligible, deletion_eligibility, set_source_protection, source_lifecycle_status, sweep_source_lifecycle
+from .services.media_audit import audit_recording, latest_media_audit, media_audit_view, next_integrity_candidate
+from .services.manual_recovery import create_manual_interview, validate_manual_interval
+from .services.playback import create_playback_proxy, playback_cache_status, playback_proxy_view
 from .services.calendar import LoveRacingCalendarProvider, refresh_race_day, sync_race_days
 from .services.context import refresh_race_day_contexts, resolve_interview_context
 from .services.orchestrator import RaceDayOrchestrator, planned_day_recording_window, planned_recording_window
@@ -59,6 +62,8 @@ class ServiceState:
         self.source_lifecycle_last_result: dict | None = None
         self.calendar_last_sync_at: datetime | None = None
         self.calendar_last_sync_result: dict | None = None
+        self.integrity_task: asyncio.Task | None = None
+        self.integrity_recording_id: int | None = None
 
 
 def serialize_recording(recording: Recording, timezone: str = "Pacific/Auckland") -> dict:
@@ -98,6 +103,16 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
         with state.sessions() as session:
             seed_settings(session, state.settings); backfill_race_days(session); state.recorder.recover(session); discover_recordings(session, state.settings)
         if state.worker: state.worker.start()
+        def run_integrity(recording_id: int) -> None:
+            try:
+                with state.sessions() as session:
+                    recording = session.get(Recording, recording_id)
+                    if recording is not None:
+                        audit_recording(session, state.settings, recording)
+            except Exception:
+                LOG.exception("automatic recording integrity audit failed", extra={"recording_id": recording_id})
+            finally:
+                state.integrity_recording_id = None
         async def watch() -> None:
             while True:
                 await asyncio.sleep(state.settings.discovery_interval_seconds)
@@ -124,6 +139,21 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
                     # Discovery is best-effort; a temporary filesystem error must
                     # not take down review or queue operations.
                     LOG.exception("periodic discovery failed")
+                try:
+                    if state.integrity_task is None or state.integrity_task.done():
+                        with state.sessions() as session:
+                            enabled = bool(get_value(session, "integrity_audit_enabled", True))
+                            recorder_busy = bool(session.execute(select(RecordingSession.id).where(
+                                RecordingSession.status.in_(["recording", "stopping", "finalizing"])
+                            )).first())
+                            detector_busy = bool(session.execute(select(Job.id).where(Job.status == JobStatus.PROCESSING)).first())
+                            minimum_id = int(get_value(session, "integrity_audit_min_recording_id", 0))
+                            candidate = None if not enabled or recorder_busy or detector_busy else next_integrity_candidate(session, min_recording_id=minimum_id)
+                            if candidate is not None:
+                                state.integrity_recording_id = candidate.id
+                                state.integrity_task = asyncio.create_task(asyncio.to_thread(run_integrity, candidate.id))
+                except Exception:
+                    LOG.exception("integrity audit scheduling failed")
                 try:
                     with state.sessions() as session:
                         result = sweep_source_lifecycle(
@@ -170,6 +200,8 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
                     "pending_reviews": session.query(Interview).filter(Interview.review_status == ReviewStatus.PENDING).count(),
                     "pending_exports": session.query(Interview).filter(Interview.review_status == ReviewStatus.APPROVED, Interview.export_state != "exported").count(),
                     "deletion_eligible_sources": lifecycle["counts"]["eligible"],
+                    "integrity_audit_recording_id": state.integrity_recording_id,
+                    "integrity_audit_active": bool(state.integrity_task and not state.integrity_task.done()),
                     "storage": {"recordings_free_bytes": source_free, "data_free_bytes": data_free},
                     "max_concurrent_recordings": get_value(session, "max_concurrent_recordings", 1),
                     "ffmpeg_available": True, "ffprobe_available": True, "legacy_engine_available": state.settings.legacy_python.exists(),
@@ -298,6 +330,45 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             if not item: raise HTTPException(404, "race day not found")
             return race_day_summary(session, item)
 
+    @app.get("/api/race-days/{race_day_id}/archive")
+    def race_day_archive_api(race_day_id: int) -> dict:
+        with state.sessions() as session:
+            item = session.get(RaceDay, race_day_id)
+            if not item: raise HTTPException(404, "race day not found")
+            return race_day_archive(session, state.settings, item)
+
+    @app.put("/api/race-days/{race_day_id}/protect")
+    def protect_race_day(race_day_id: int, body: dict) -> dict:
+        protected = bool(body.get("protected", True))
+        with state.sessions() as session:
+            item = session.get(RaceDay, race_day_id)
+            if not item: raise HTTPException(404, "race day not found")
+            rows = session.execute(select(Recording).where(Recording.race_day_id == race_day_id)).scalars().all()
+            for recording in rows:
+                set_source_protection(session, recording, protected, reason="race_day_operator")
+            return {"race_day_id": race_day_id, "protected": protected, "recording_ids": [row.id for row in rows]}
+
+    @app.get("/api/race-days/{race_day_id}/delete-eligible")
+    def preview_delete_race_day(race_day_id: int) -> dict:
+        with state.sessions() as session:
+            if not session.get(RaceDay, race_day_id): raise HTTPException(404, "race day not found")
+            rows = session.execute(select(Recording).where(Recording.race_day_id == race_day_id).order_by(Recording.id)).scalars().all()
+            outcomes = [deletion_eligibility(session, state.settings, row) for row in rows]
+            return {"race_day_id": race_day_id, "eligible": sum(row["safe_to_delete"] for row in outcomes),
+                    "blocked": sum(not row["safe_to_delete"] for row in outcomes),
+                    "bytes_reclaimable": sum(record.size_bytes for record, result in zip(rows, outcomes) if result["safe_to_delete"]),
+                    "recordings": outcomes}
+
+    @app.post("/api/race-days/{race_day_id}/delete-eligible")
+    def delete_eligible_race_day(race_day_id: int, body: dict) -> dict:
+        if body.get("confirmation") != "delete individually eligible stored recordings":
+            raise HTTPException(422, "explicit race-day deletion confirmation is required")
+        with state.sessions() as session:
+            if not session.get(RaceDay, race_day_id): raise HTTPException(404, "race day not found")
+            rows = session.execute(select(Recording).where(Recording.race_day_id == race_day_id).order_by(Recording.id)).scalars().all()
+            results = [delete_if_eligible(session, state.settings, row) for row in rows]
+            return {"race_day_id": race_day_id, "deleted": sum(bool(row.get("deleted")) for row in results), "results": results}
+
     @app.get("/api/race-days/{race_day_id}/calendar")
     def race_day_calendar(race_day_id: int) -> dict:
         with state.sessions() as session:
@@ -341,6 +412,99 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             item = session.get(Recording, recording_id)
             if not item: raise HTTPException(404, "recording not found")
             return deletion_eligibility(session, state.settings, item)
+
+    @app.put("/api/recordings/{recording_id}/protection")
+    def protect_recording(recording_id: int, body: dict) -> dict:
+        with state.sessions() as session:
+            item = session.get(Recording, recording_id)
+            if not item: raise HTTPException(404, "recording not found")
+            return set_source_protection(session, item, bool(body.get("protected", True)), reason=str(body.get("reason") or "operator"))
+
+    @app.post("/api/recordings/{recording_id}/delete-source")
+    def delete_recording_source(recording_id: int, body: dict) -> dict:
+        with state.sessions() as session:
+            item = session.get(Recording, recording_id)
+            if not item: raise HTTPException(404, "recording not found")
+            if body.get("filename") != item.filename or int(body.get("size_bytes", -1)) != item.size_bytes or body.get("confirmation") != "delete stored source":
+                raise HTTPException(422, "filename, size, and explicit deletion confirmation must match")
+            result = delete_if_eligible(session, state.settings, item)
+            if not result.get("deleted"):
+                raise HTTPException(409, result)
+            return result
+
+    @app.get("/api/recordings/{recording_id}/integrity")
+    def recording_integrity(recording_id: int) -> dict:
+        with state.sessions() as session:
+            item = session.get(Recording, recording_id)
+            if not item: raise HTTPException(404, "recording not found")
+            return media_audit_view(latest_media_audit(session, item.id))
+
+    @app.post("/api/recordings/{recording_id}/integrity")
+    def rerun_recording_integrity(recording_id: int) -> dict:
+        with state.sessions() as session:
+            item = session.get(Recording, recording_id)
+            if not item: raise HTTPException(404, "recording not found")
+            try: return media_audit_view(audit_recording(session, state.settings, item))
+            except ValueError as exc: raise HTTPException(409, str(exc))
+
+    @app.post("/api/recordings/{recording_id}/playback-proxy")
+    def generate_playback_proxy(recording_id: int) -> dict:
+        with state.sessions() as session:
+            item = session.get(Recording, recording_id)
+            if not item: raise HTTPException(404, "recording not found")
+            try: create_playback_proxy(session, state.settings, item)
+            except (ValueError, FileNotFoundError) as exc: raise HTTPException(409, str(exc))
+            return playback_proxy_view(session, state.settings, item.id)
+
+    @app.get("/api/recordings/{recording_id}/playback")
+    def recording_playback(recording_id: int):
+        with state.sessions() as session:
+            row = session.execute(select(PlaybackProxy).where(PlaybackProxy.recording_id == recording_id)).scalar_one_or_none()
+            if not row: raise HTTPException(404, "playback proxy has not been generated")
+            try:
+                path = artifact_path(state.settings.data_dir, row.relative_path)
+                if not path.is_file(): raise FileNotFoundError("playback proxy is unavailable")
+            except FileNotFoundError: raise HTTPException(404, "playback proxy is unavailable")
+            row.last_accessed_at = datetime.utcnow(); session.commit()
+            return FileResponse(path, media_type="video/mp4", filename=f"recording_{recording_id}.mp4", content_disposition_type="inline")
+
+    @app.get("/api/recordings/{recording_id}/download")
+    def download_recording(recording_id: int):
+        with state.sessions() as session:
+            item = session.get(Recording, recording_id)
+            if not item: raise HTTPException(404, "recording not found")
+            try: path = resolve_recording_source(state.settings, item, verify_size=True)
+            except (ValueError, FileNotFoundError) as exc: raise HTTPException(404, str(exc))
+            return FileResponse(path, media_type="video/mp2t", filename=item.filename, content_disposition_type="attachment")
+
+    @app.get("/api/operations/playback-cache")
+    def playback_cache() -> dict:
+        with state.sessions() as session: return playback_cache_status(session, state.settings)
+
+    @app.post("/api/recordings/{recording_id}/manual-interviews/validate")
+    def validate_missed_interview(recording_id: int, body: dict) -> dict:
+        with state.sessions() as session:
+            item = session.get(Recording, recording_id)
+            if not item: raise HTTPException(404, "recording not found")
+            try: validate_manual_interval(state.settings, item, float(body["start"]), float(body["end"]))
+            except (KeyError, TypeError, ValueError) as exc: raise HTTPException(422, str(exc))
+            return {"valid": True, "recording_id": recording_id, "start": float(body["start"]), "end": float(body["end"])}
+
+    @app.post("/api/recordings/{recording_id}/manual-interviews")
+    def create_missed_interview(recording_id: int, body: dict) -> dict:
+        if body.get("confirmation") != "create manual interview":
+            raise HTTPException(422, "explicit manual interview confirmation is required")
+        with state.sessions() as session:
+            item = session.get(Recording, recording_id)
+            if not item: raise HTTPException(404, "recording not found")
+            try:
+                interview = create_manual_interview(session, state.settings, item, start=float(body["start"]), end=float(body["end"]),
+                                                    final_name=body.get("name"), final_role=body.get("role"))
+                refresh_race_day_contexts(session, item.race_day_id, state.settings.broadcast_timezone) if item.race_day_id else None
+                sync_groups(session)
+                return serialize_interview(session, interview, state.settings.broadcast_timezone)
+            except (KeyError, TypeError, ValueError, FileNotFoundError) as exc:
+                session.rollback(); raise HTTPException(422, str(exc))
 
     @app.get("/api/operations/source-lifecycle")
     def lifecycle_status() -> dict:
@@ -571,6 +735,8 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             return templates.TemplateResponse(request, "dashboard.html", {"recordings": session.query(Recording).count(), "pending": session.query(Interview).filter(Interview.review_status==ReviewStatus.PENDING).count(), "approved": session.query(Interview).filter(Interview.review_status==ReviewStatus.APPROVED).count()})
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request): return templates.TemplateResponse(request, "settings.html", {})
+    @app.get("/race-days/{race_day_id}", response_class=HTMLResponse)
+    def race_day_page(request: Request, race_day_id: int): return templates.TemplateResponse(request, "race_day.html", {"race_day_id": race_day_id})
     @app.get("/review", response_class=HTMLResponse)
     def review_queue(request: Request): return templates.TemplateResponse(request, "queue.html", {})
     @app.get("/review/people/{group_id}", response_class=HTMLResponse)

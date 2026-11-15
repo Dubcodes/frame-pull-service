@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..models import Interview, InterviewRevision, Job, JobStatus, Recording, ReviewStatus, SourceDeletionAudit
+from ..models import Interview, InterviewRevision, Job, JobStatus, Recording, RecordingMediaAudit, ReviewStatus, SourceDeletionAudit, SourceProtectionAudit
 from .operations import get_value
 from .paths import resolve_data_artifact, resolve_recording_source
 
@@ -23,6 +23,11 @@ def deletion_eligibility(session: Session, settings: Settings, recording: Record
     except (ValueError, FileNotFoundError, OSError):
         checks["contained_ts_source"] = False
     checks["deletion_enabled"] = bool(get_value(session, "source_deletion_enabled", False))
+    checks["not_manually_protected"] = not recording.source_protected
+    latest_audit = session.execute(
+        select(RecordingMediaAudit).where(RecordingMediaAudit.recording_id == recording.id).order_by(RecordingMediaAudit.id.desc())
+    ).scalars().first()
+    checks["integrity_healthy"] = bool(latest_audit and latest_audit.classification == "healthy")
     checks["closed"] = bool(recording.is_closed or recording.stable_at)
     checks["not_processing"] = not bool(session.execute(select(Job).where(Job.recording_id == recording.id, Job.status == JobStatus.PROCESSING)).first())
     checks["no_queued_job"] = not bool(session.execute(select(Job).where(Job.recording_id == recording.id, Job.status == JobStatus.QUEUED)).first())
@@ -74,6 +79,8 @@ def delete_if_eligible(session: Session, settings: Settings, recording: Recordin
     if path.resolve().parent != settings.source_dir.resolve():
         raise ValueError("source no longer passes containment check")
     size = path.stat().st_size
+    from .playback import remove_playback_proxy
+    remove_playback_proxy(session, settings, recording.id)
     path.unlink()
     session.add(SourceDeletionAudit(
         recording_id=recording.id,
@@ -84,6 +91,13 @@ def delete_if_eligible(session: Session, settings: Settings, recording: Recordin
     ))
     session.commit()
     return {**result, "deleted": True}
+
+
+def set_source_protection(session: Session, recording: Recording, protected: bool, *, reason: str = "operator") -> dict:
+    recording.source_protected = bool(protected)
+    session.add(SourceProtectionAudit(recording_id=recording.id, protected=bool(protected), reason=reason[:255] or "operator"))
+    session.commit()
+    return {"recording_id": recording.id, "protected": recording.source_protected, "reason": reason}
 
 
 def sweep_source_lifecycle(
@@ -137,6 +151,8 @@ def source_lifecycle_status(session: Session, settings: Settings, *, recent_limi
         "processing_or_queued": 0,
         "missing_evidence": 0,
         "missing_source": 0,
+        "protected": 0,
+        "integrity_blocked": 0,
     }
     for recording in session.execute(select(Recording).order_by(Recording.id)).scalars():
         result = deletion_eligibility(session, settings, recording)
@@ -149,6 +165,8 @@ def source_lifecycle_status(session: Session, settings: Settings, *, recent_limi
         counts["processing_or_queued"] += int(not checks["not_processing"] or not checks["no_queued_job"])
         counts["missing_evidence"] += int(not checks["evidence_present"] or not checks["approved_portraits_present"])
         counts["missing_source"] += int(not checks["contained_ts_source"])
+        counts["protected"] += int(not checks["not_manually_protected"])
+        counts["integrity_blocked"] += int(not checks["integrity_healthy"])
     audits = session.execute(
         select(SourceDeletionAudit).order_by(SourceDeletionAudit.id.desc()).limit(max(0, min(recent_limit, 50)))
     ).scalars().all()

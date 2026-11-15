@@ -19,7 +19,7 @@ ADDITIVE_SCHEMA_COLUMNS = {
     "recordings": {
         "race_day_id": "INTEGER", "recording_started_at": "DATETIME", "recording_stopped_at": "DATETIME",
         "duration_seconds": "FLOAT", "metadata_probed_at": "DATETIME", "is_closed": "BOOLEAN DEFAULT 0",
-        "recorder_session_id": "INTEGER",
+        "recorder_session_id": "INTEGER", "source_protected": "BOOLEAN NOT NULL DEFAULT 0",
     },
     "interviews": {"appearance_group_id": "INTEGER", "context_confidence": "FLOAT"},
     "calendar_meetings": {"source_url": "TEXT", "last_attempted_at": "DATETIME", "provider_status": "VARCHAR(32) DEFAULT 'unknown'", "last_error": "TEXT"},
