@@ -8,7 +8,8 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..models import Candidate, Interview, InterviewRevision, ProcessingRun, Recording, ReviewEvent
+from ..models import Candidate, DetectorCandidateRecovery, Interview, InterviewRevision, ProcessingRun, Recording, ReviewEvent
+from .detector_candidates import MISS_CATEGORIES
 from .manifests import write_manifest
 from .media import create_clip, extract_frame
 from .normalizer import _manifest
@@ -40,6 +41,8 @@ def create_manual_interview(
     end: float,
     final_name: str | None = None,
     final_role: str | None = None,
+    detector_candidate: dict | None = None,
+    miss_category: str = "unknown",
 ) -> Interview:
     validate_manual_interval(settings, recording, start, end)
     source = resolve_recording_source(settings, recording, verify_size=True)
@@ -87,11 +90,53 @@ def create_manual_interview(
     interview.selected_candidate_id = candidates[0].id
     session.add(ReviewEvent(
         interview_id=interview.id, event_type="manual_recovery_created",
-        payload={"recording_id": recording.id, "start": start, "end": end, "bounds_basis": "manual_operator"},
+        payload={
+            "recording_id": recording.id, "start": start, "end": end,
+            "bounds_basis": "manual_operator",
+            "detector_candidate_key": detector_candidate["candidate_key"] if detector_candidate else None,
+        },
     ))
+    if detector_candidate:
+        if detector_candidate.get("recovered_interview_id"):
+            raise ValueError("detector candidate has already been recovered")
+        category = miss_category if miss_category in MISS_CATEGORIES else "unknown"
+        session.add(DetectorCandidateRecovery(
+            candidate_key=detector_candidate["candidate_key"],
+            processing_run_id=int(detector_candidate["processing_run_id"]),
+            recording_id=recording.id,
+            interview_id=interview.id,
+            proposed_start=float(detector_candidate["proposed_start"]),
+            proposed_end=float(detector_candidate["proposed_end"]),
+            final_start=start,
+            final_end=end,
+            miss_category=category,
+        ))
+        session.add(ReviewEvent(
+            interview_id=interview.id,
+            event_type="detector_candidate_recovered",
+            payload={
+                "candidate_key": detector_candidate["candidate_key"],
+                "processing_run_id": detector_candidate["processing_run_id"],
+                "proposed_start": detector_candidate["proposed_start"],
+                "proposed_end": detector_candidate["proposed_end"],
+                "final_start": start,
+                "final_end": end,
+                "miss_category": category,
+            },
+        ))
     session.flush()
     revision.manifest = _manifest(interview, revision, candidates, recording, settings.data_dir)
     revision.manifest["recovery"] = {"manual": True, "created_at": datetime.utcnow().isoformat() + "Z"}
+    if detector_candidate:
+        revision.manifest["recovery"]["detector_candidate"] = {
+            "candidate_key": detector_candidate["candidate_key"],
+            "processing_run_id": detector_candidate["processing_run_id"],
+            "proposed_start": detector_candidate["proposed_start"],
+            "proposed_end": detector_candidate["proposed_end"],
+            "final_start": start,
+            "final_end": end,
+            "miss_category": category,
+        }
     write_manifest(Path(revision.manifest_path), revision.manifest)
     session.commit()
     return interview

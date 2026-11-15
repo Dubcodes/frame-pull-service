@@ -28,6 +28,7 @@ DEFAULTS = {
     "source_retention_hours": 168,
     "require_review_complete_before_delete": True,
     "require_export_before_delete": True,
+    "require_race_day_source_review_before_delete": True,
     "default_review_view": "people",
     # Enabled only after the first production backfill/qualification so an
     # upgrade cannot unexpectedly full-scan media during a live race day.

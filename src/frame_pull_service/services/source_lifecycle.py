@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..models import Interview, InterviewRevision, Job, JobStatus, Recording, RecordingMediaAudit, ReviewStatus, SourceDeletionAudit, SourceProtectionAudit
+from ..models import Interview, InterviewRevision, Job, JobStatus, RaceDay, Recording, RecordingMediaAudit, ReviewStatus, SourceDeletionAudit, SourceProtectionAudit
 from .operations import get_value
 from .paths import resolve_data_artifact, resolve_recording_source
 
@@ -15,14 +15,23 @@ from .paths import resolve_data_artifact, resolve_recording_source
 LOG = logging.getLogger(__name__)
 
 
-def deletion_eligibility(session: Session, settings: Settings, recording: Recording) -> dict:
+def deletion_eligibility(
+    session: Session,
+    settings: Settings,
+    recording: Recording,
+    *,
+    deletion_enabled_override: bool | None = None,
+) -> dict:
     checks: dict[str, bool] = {}
     try:
         resolve_recording_source(settings, recording, verify_size=True)
         checks["contained_ts_source"] = True
     except (ValueError, FileNotFoundError, OSError):
         checks["contained_ts_source"] = False
-    checks["deletion_enabled"] = bool(get_value(session, "source_deletion_enabled", False))
+    checks["deletion_enabled"] = (
+        bool(get_value(session, "source_deletion_enabled", False))
+        if deletion_enabled_override is None else bool(deletion_enabled_override)
+    )
     checks["not_manually_protected"] = not recording.source_protected
     latest_audit = session.execute(
         select(RecordingMediaAudit).where(RecordingMediaAudit.recording_id == recording.id).order_by(RecordingMediaAudit.id.desc())
@@ -32,6 +41,11 @@ def deletion_eligibility(session: Session, settings: Settings, recording: Record
     checks["not_processing"] = not bool(session.execute(select(Job).where(Job.recording_id == recording.id, Job.status == JobStatus.PROCESSING)).first())
     checks["no_queued_job"] = not bool(session.execute(select(Job).where(Job.recording_id == recording.id, Job.status == JobStatus.QUEUED)).first())
     checks["completed_run"] = bool(session.execute(select(Job).where(Job.recording_id == recording.id, Job.status == JobStatus.COMPLETE)).first())
+    require_source_review = bool(get_value(session, "require_race_day_source_review_before_delete", True))
+    race_day = session.get(RaceDay, recording.race_day_id) if recording.race_day_id else None
+    checks["race_day_source_review_complete"] = (
+        not require_source_review or race_day is None or race_day.source_review_state == "review_complete"
+    )
     interviews = session.execute(select(Interview).where(Interview.recording_id == recording.id)).scalars().all()
     require_review = bool(get_value(session, "require_review_complete_before_delete", True))
     # A completed run with no interviews has no editorial work to finish. These
@@ -153,6 +167,7 @@ def source_lifecycle_status(session: Session, settings: Settings, *, recent_limi
         "missing_source": 0,
         "protected": 0,
         "integrity_blocked": 0,
+        "waiting_source_review": 0,
     }
     for recording in session.execute(select(Recording).order_by(Recording.id)).scalars():
         result = deletion_eligibility(session, settings, recording)
@@ -167,6 +182,10 @@ def source_lifecycle_status(session: Session, settings: Settings, *, recent_limi
         counts["missing_source"] += int(not checks["contained_ts_source"])
         counts["protected"] += int(not checks["not_manually_protected"])
         counts["integrity_blocked"] += int(not checks["integrity_healthy"])
+        counts["waiting_source_review"] += int(not checks["race_day_source_review_complete"])
+    counts["race_days_awaiting_source_review"] = session.query(RaceDay).filter(
+        RaceDay.source_review_state != "review_complete"
+    ).count()
     audits = session.execute(
         select(SourceDeletionAudit).order_by(SourceDeletionAudit.id.desc()).limit(max(0, min(recent_limit, 50)))
     ).scalars().all()
@@ -175,6 +194,7 @@ def source_lifecycle_status(session: Session, settings: Settings, *, recent_limi
         "retention_hours": int(get_value(session, "source_retention_hours", 168)),
         "require_review": bool(get_value(session, "require_review_complete_before_delete", True)),
         "require_export": bool(get_value(session, "require_export_before_delete", True)),
+        "require_race_day_source_review": bool(get_value(session, "require_race_day_source_review_before_delete", True)),
         "sweep_limit": settings.source_lifecycle_sweep_limit,
         "counts": counts,
         "recent_deletions": [
@@ -187,4 +207,26 @@ def source_lifecycle_status(session: Session, settings: Settings, *, recent_limi
             }
             for item in audits
         ],
+    }
+
+
+def source_lifecycle_dry_run(session: Session, settings: Settings) -> dict:
+    """Simulate deletion enabled without deleting or changing persisted settings."""
+    rows = session.execute(select(Recording).order_by(Recording.id)).scalars().all()
+    results = [deletion_eligibility(session, settings, row, deletion_enabled_override=True) for row in rows]
+    blocked_by: dict[str, int] = {}
+    for result in results:
+        for key, passed in result["checks"].items():
+            if not passed:
+                blocked_by[key] = blocked_by.get(key, 0) + 1
+    return {
+        "dry_run": True,
+        "simulated_source_deletion_enabled": True,
+        "inspected": len(results),
+        "eligible": sum(result["safe_to_delete"] for result in results),
+        "bytes_reclaimable": sum(
+            recording.size_bytes for recording, result in zip(rows, results) if result["safe_to_delete"]
+        ),
+        "blocked_by": blocked_by,
+        "recordings": results,
     }

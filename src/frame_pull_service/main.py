@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from . import __version__
 from .config import Settings, get_settings
 from .db import create_db_engine, init_db, make_session_factory
-from .models import AppearanceGroup, CalendarMeeting, Candidate, Interview, InterviewRevision, Job, JobStatus, PlaybackProxy, RaceDay, Recording, RecordingMediaAudit, RecordingSession, ReviewEvent, ReviewStatus
+from .models import AppearanceGroup, CalendarMeeting, Candidate, DetectorCandidateRecovery, Interview, InterviewRevision, Job, JobStatus, PlaybackProxy, RaceDay, Recording, RecordingMediaAudit, RecordingSession, ReviewEvent, ReviewStatus
 from .schemas import CaptureFrameRequest, RejectRequest, ReviewPatch, SelectCandidateRequest
 from .services.discovery import discover_recordings
 from .services.cleanup import cleanup_plan
@@ -29,9 +29,10 @@ from .services.worker import Worker
 from .services.operations import get_value, seed_settings, settings_view, update_settings
 from .services.race_days import backfill_race_days, list_race_days, race_day_archive, race_day_summary
 from .services.groups import acknowledge_group_export, acknowledge_interview_export, group_view, list_groups, sync_groups
-from .services.source_lifecycle import delete_if_eligible, deletion_eligibility, set_source_protection, source_lifecycle_status, sweep_source_lifecycle
+from .services.source_lifecycle import delete_if_eligible, deletion_eligibility, set_source_protection, source_lifecycle_dry_run, source_lifecycle_status, sweep_source_lifecycle
 from .services.media_audit import audit_recording, latest_media_audit, media_audit_view, next_integrity_candidate
 from .services.manual_recovery import create_manual_interview, validate_manual_interval
+from .services.detector_candidates import MISS_CATEGORIES, detector_candidates_for_race_day, get_detector_candidate, set_source_review_state
 from .services.playback import create_playback_proxy, playback_cache_status, playback_proxy_view
 from .services.calendar import LoveRacingCalendarProvider, refresh_race_day, sync_race_days
 from .services.context import refresh_race_day_contexts, resolve_interview_context
@@ -337,6 +338,25 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             if not item: raise HTTPException(404, "race day not found")
             return race_day_archive(session, state.settings, item)
 
+    @app.get("/api/race-days/{race_day_id}/detector-candidates")
+    def race_day_detector_candidates(race_day_id: int) -> dict:
+        with state.sessions() as session:
+            item = session.get(RaceDay, race_day_id)
+            if not item: raise HTTPException(404, "race day not found")
+            rows = detector_candidates_for_race_day(session, state.settings, race_day_id)
+            return {"race_day_id": race_day_id, "count": len(rows), "candidates": rows}
+
+    @app.put("/api/race-days/{race_day_id}/source-review")
+    def update_race_day_source_review(race_day_id: int, body: dict) -> dict:
+        requested = str(body.get("state") or "")
+        if requested == "review_complete" and body.get("confirmation") != "source review is complete":
+            raise HTTPException(422, "explicit source-review completion confirmation is required")
+        with state.sessions() as session:
+            item = session.get(RaceDay, race_day_id)
+            if not item: raise HTTPException(404, "race day not found")
+            try: return set_source_review_state(session, item, requested, note=body.get("note"))
+            except ValueError as exc: raise HTTPException(422, str(exc))
+
     @app.put("/api/race-days/{race_day_id}/protect")
     def protect_race_day(race_day_id: int, body: dict) -> dict:
         protected = bool(body.get("protected", True))
@@ -488,7 +508,12 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             if not item: raise HTTPException(404, "recording not found")
             try: validate_manual_interval(state.settings, item, float(body["start"]), float(body["end"]))
             except (KeyError, TypeError, ValueError) as exc: raise HTTPException(422, str(exc))
-            return {"valid": True, "recording_id": recording_id, "start": float(body["start"]), "end": float(body["end"])}
+            candidate = None
+            if body.get("detector_candidate_key"):
+                try: candidate = get_detector_candidate(session, state.settings, str(body["detector_candidate_key"]), recording_id=recording_id)
+                except ValueError as exc: raise HTTPException(422, str(exc))
+            return {"valid": True, "recording_id": recording_id, "start": float(body["start"]), "end": float(body["end"]),
+                    "detector_candidate": candidate}
 
     @app.post("/api/recordings/{recording_id}/manual-interviews")
     def create_missed_interview(recording_id: int, body: dict) -> dict:
@@ -498,13 +523,36 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             item = session.get(Recording, recording_id)
             if not item: raise HTTPException(404, "recording not found")
             try:
+                detector_candidate = (
+                    get_detector_candidate(session, state.settings, str(body["detector_candidate_key"]), recording_id=recording_id)
+                    if body.get("detector_candidate_key") else None
+                )
                 interview = create_manual_interview(session, state.settings, item, start=float(body["start"]), end=float(body["end"]),
-                                                    final_name=body.get("name"), final_role=body.get("role"))
+                                                    final_name=body.get("name"), final_role=body.get("role"),
+                                                    detector_candidate=detector_candidate,
+                                                    miss_category=str(body.get("miss_category") or "unknown"))
+                if item.race_day_id:
+                    race_day = session.get(RaceDay, item.race_day_id)
+                    if race_day and race_day.source_review_state == "not_reviewed":
+                        set_source_review_state(session, race_day, "in_progress", note="Manual detector-candidate recovery started")
                 refresh_race_day_contexts(session, item.race_day_id, state.settings.broadcast_timezone) if item.race_day_id else None
                 sync_groups(session)
                 return serialize_interview(session, interview, state.settings.broadcast_timezone)
             except (KeyError, TypeError, ValueError, FileNotFoundError) as exc:
                 session.rollback(); raise HTTPException(422, str(exc))
+
+    @app.put("/api/detector-candidate-recoveries/{interview_id}")
+    def classify_detector_candidate_recovery(interview_id: int, body: dict) -> dict:
+        category = str(body.get("miss_category") or "")
+        if category not in MISS_CATEGORIES:
+            raise HTTPException(422, "invalid detector miss category")
+        with state.sessions() as session:
+            row = session.execute(select(DetectorCandidateRecovery).where(
+                DetectorCandidateRecovery.interview_id == interview_id
+            )).scalar_one_or_none()
+            if row is None: raise HTTPException(404, "detector candidate recovery not found")
+            row.miss_category = category; session.commit()
+            return {"interview_id": interview_id, "candidate_key": row.candidate_key, "miss_category": row.miss_category}
 
     @app.get("/api/operations/source-lifecycle")
     def lifecycle_status() -> dict:
@@ -512,6 +560,10 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             result = source_lifecycle_status(session, state.settings)
             result["last_sweep"] = state.source_lifecycle_last_result
             return result
+
+    @app.get("/api/operations/source-lifecycle/dry-run")
+    def lifecycle_dry_run() -> dict:
+        with state.sessions() as session: return source_lifecycle_dry_run(session, state.settings)
 
     @app.get("/api/interviews")
     def interviews(status: ReviewStatus | None = None, export_state: str | None = None) -> list[dict]:

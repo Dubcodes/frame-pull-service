@@ -16,6 +16,11 @@ class Base(DeclarativeBase):
 # These are deliberately narrow, additive upgrades for tables that already
 # exist. Missing tables are handled by Base.metadata.create_all at startup.
 ADDITIVE_SCHEMA_COLUMNS = {
+    "race_days": {
+        "source_review_state": "VARCHAR(32) NOT NULL DEFAULT 'not_reviewed'",
+        "source_review_updated_at": "DATETIME",
+        "source_review_note": "TEXT",
+    },
     "recordings": {
         "race_day_id": "INTEGER", "recording_started_at": "DATETIME", "recording_stopped_at": "DATETIME",
         "duration_seconds": "FLOAT", "metadata_probed_at": "DATETIME", "is_closed": "BOOLEAN DEFAULT 0",

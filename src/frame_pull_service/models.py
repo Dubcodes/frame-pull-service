@@ -45,6 +45,9 @@ class RaceDay(Base):
     race_date: Mapped[date] = mapped_column(Date, unique=True, index=True)
     label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    source_review_state: Mapped[str] = mapped_column(String(32), default="not_reviewed", server_default="not_reviewed")
+    source_review_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    source_review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class OperationalSetting(Base):
@@ -217,6 +220,21 @@ class ProcessingRun(Base):
     status: Mapped[str] = mapped_column(String(32), default="processing")
     job_dir: Mapped[str] = mapped_column(Text)
     summary: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class DetectorCandidateRecovery(Base):
+    __tablename__ = "detector_candidate_recoveries"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    candidate_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    processing_run_id: Mapped[int] = mapped_column(ForeignKey("processing_runs.id"), index=True)
+    recording_id: Mapped[int] = mapped_column(ForeignKey("recordings.id"), index=True)
+    interview_id: Mapped[int] = mapped_column(ForeignKey("interviews.id"), unique=True, index=True)
+    proposed_start: Mapped[float] = mapped_column(Float)
+    proposed_end: Mapped[float] = mapped_column(Float)
+    final_start: Mapped[float] = mapped_column(Float)
+    final_end: Mapped[float] = mapped_column(Float)
+    miss_category: Mapped[str] = mapped_column(String(80), default="unknown")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Interview(Base):

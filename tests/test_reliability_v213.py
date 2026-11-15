@@ -15,7 +15,7 @@ from frame_pull_service.config import Settings
 from frame_pull_service.db import create_db_engine, init_db, make_session_factory
 from frame_pull_service.main import create_app
 from frame_pull_service.models import (
-    Candidate, Interview, InterviewRevision, Job, JobStatus, PlaybackProxy, ProcessingRun,
+    Candidate, DetectorCandidateRecovery, Interview, InterviewRevision, Job, JobStatus, PlaybackProxy, ProcessingRun,
     RaceDay, Recording, RecordingMediaAudit, RecordingStatus, ReviewEvent, SourceDeletionAudit,
     SourceProtectionAudit,
 )
@@ -127,6 +127,7 @@ class ReliabilityV213Tests(unittest.TestCase):
         recording_id = self.recording()
         with self.sessions() as session:
             session.add(Job(recording_id=recording_id, status=JobStatus.COMPLETE)); self.healthy_row(session, recording_id)
+            session.get(RaceDay, session.get(Recording, recording_id).race_day_id).source_review_state = "review_complete"
             update_settings(session, {"source_deletion_enabled": True, "source_retention_hours": 0})
             result = delete_if_eligible(session, self.settings, session.get(Recording, recording_id))
             self.assertTrue(result["deleted"]); self.assertFalse((self.source / "trackside_20261115-1200_00.ts").exists())
@@ -194,14 +195,21 @@ class ReliabilityV213Tests(unittest.TestCase):
             def clip(_ffmpeg, _source, destination, _start, _end): destination.parent.mkdir(parents=True, exist_ok=True); destination.write_bytes(b"clip")
             def frame(_ffmpeg, _source, destination, _time): destination.parent.mkdir(parents=True, exist_ok=True); destination.write_bytes(b"jpg")
             with patch("frame_pull_service.services.manual_recovery.create_clip", clip), patch("frame_pull_service.services.manual_recovery.extract_frame", frame):
-                interview = create_manual_interview(session, self.settings, recording, start=10, end=20)
+                interview = create_manual_interview(session, self.settings, recording, start=10, end=20,
+                    detector_candidate={"candidate_key":f"run-{original_id}-temporal-2","processing_run_id":original_id,
+                        "proposed_start":8.0,"proposed_end":22.0,"recovered_interview_id":None},
+                    miss_category="temporal_grouping_issue")
             self.assertEqual(interview.bounds_basis, "manual_operator"); self.assertIsNone(interview.final_name)
             self.assertEqual(session.query(Candidate).filter(Candidate.revision_id == interview.active_revision_id).count(), 3)
             self.assertEqual(session.query(ReviewEvent).filter_by(interview_id=interview.id, event_type="manual_recovery_created").count(), 1)
             self.assertEqual(session.get(ProcessingRun, original_id).summary, {"interviews": 0})
             revision = session.get(InterviewRevision, interview.active_revision_id)
             self.assertTrue(Path(revision.clip_path).is_file()); self.assertTrue(Path(revision.poster_path).is_file()); self.assertTrue(Path(revision.manifest_path).is_file())
-            self.assertTrue(json.loads(Path(revision.manifest_path).read_text())["recovery"]["manual"])
+            recovery = session.query(DetectorCandidateRecovery).filter_by(interview_id=interview.id).one()
+            self.assertEqual(recovery.processing_run_id, original_id); self.assertEqual(recovery.final_start, 10)
+            manifest_recovery=json.loads(Path(revision.manifest_path).read_text())["recovery"]
+            self.assertTrue(manifest_recovery["manual"]); self.assertEqual(manifest_recovery["detector_candidate"]["miss_category"],"temporal_grouping_issue")
+            self.assertEqual(session.query(ReviewEvent).filter_by(interview_id=interview.id,event_type="detector_candidate_recovered").count(),1)
 
     def test_archive_frontend_has_chunk_advance_timeline_filters_and_safe_actions(self):
         js = (Path(__file__).resolve().parents[1] / "src" / "frame_pull_service" / "web" / "static" / "race_day.js").read_text()

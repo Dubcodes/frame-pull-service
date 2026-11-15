@@ -138,6 +138,12 @@ discovery, and queue only explicit recording IDs. Keep external/archive-drive
 originals until an independent retention decision. Production source deletion
 does not authorize deleting an archive-drive copy.
 
+### Detector miss recovery and Race Day source review (V2.13.1)
+
+Race Day archives expose normalized, path-free rejected temporal detector evidence as neutral detector candidates. An operator can filter candidates, seek retained playback, and prefill the existing manual-recovery workflow without changing the original detector run. A confirmed recovery records the original processing run and candidate key, proposed and final bounds, manual Interview ID, and an optional miss category.
+
+Race Day source review is independent of Interview review and has explicit `not_reviewed`, `in_progress`, and `review_complete` states. When `require_race_day_source_review_before_delete` is enabled, every Race Day recording—including a completed zero-Interview run—is blocked from deletion until an operator explicitly completes source review. This gate is additive to integrity, retention, queue, review, export, evidence, portrait, and manual-protection checks. Non-RaceDay historical sources do not acquire an invented Race Day requirement. The lifecycle dry-run endpoint simulates deletion enabled without changing settings or deleting media.
+
 ## Windows development / historical qualification
 
 ```powershell
@@ -278,7 +284,7 @@ is rolled back and logged without stopping discovery or later candidates. A
 successful deletion writes a durable audit row. A completed detector run with
 zero interviews has no review, export, evidence, or portrait work, so those
 universal gates are true; the complete-job, closed, retention, containment,
-queue, and enablement gates still apply.
+queue, enablement, and explicit Race Day source-review gates still apply.
 
 `GET /api/operations/source-lifecycle` reports settings, blocker counts, last
 sweep, and recent deletion audits without filesystem paths. `/api/health` also

@@ -12,6 +12,7 @@ from ..models import CalendarMeeting, CalendarRace, Interview, InterviewRevision
 from .media_audit import latest_media_audit, media_audit_view
 from .paths import resolve_recording_source
 from .playback import playback_proxy_view
+from .detector_candidates import detector_candidates_for_race_day, source_review_view
 from .time_model import DEFAULT_BROADCAST_TIMEZONE, broadcast_zone, in_broadcast_timezone, iso_broadcast, recording_end
 
 
@@ -100,7 +101,8 @@ def race_day_summary(session: Session, race_day: RaceDay) -> dict:
             "first_race": iso_broadcast(min(race_times)) if race_times else None, "last_race": iso_broadcast(max(race_times)) if race_times else None,
             "last_calendar_refresh": iso_broadcast(max((row.refreshed_at for row in meeting_rows), default=None)),
             "files": len(records), "interviews": interviews, "pending": pending, "approved": approved,
-            "jobs": dict(job_counts), "recordings": [{"id": r.id, "filename": r.filename, "status": r.status.value,
+            "jobs": dict(job_counts), "source_review": source_review_view(race_day),
+            "recordings": [{"id": r.id, "filename": r.filename, "status": r.status.value,
               "started_at": iso_broadcast(r.recording_started_at), "stopped_at": iso_broadcast(r.recording_stopped_at),
               "duration_seconds": r.duration_seconds,
               "latest_job": latest_job(r)} for r in records], "recorder": recorder}
@@ -152,12 +154,15 @@ def race_day_archive(session: Session, settings, race_day: RaceDay) -> dict:
     rejected = sum(row["review_status"] == "rejected" for row in interview_rows)
     exported = sum(row["export_state"] == "exported" for row in interview_rows)
     manual = sum(row["manual"] for row in interview_rows)
+    detector_candidates = detector_candidates_for_race_day(session, settings, race_day.id)
     summary.update({
         "total_source_bytes": sum(row["size_bytes"] for row in record_rows if row["source_available"]),
         "total_source_duration_seconds": sum((row["duration_seconds"] or 0) for row in record_rows if row["source_available"]),
         "source_available_count": sum(row["source_available"] for row in record_rows),
         "health": dict(health_counts), "rejected": rejected, "exported": exported,
         "automated_interviews": len(interview_rows) - manual, "manually_recovered_interviews": manual,
+        "detector_candidate_count": len(detector_candidates),
+        "unresolved_detector_candidates": sum(not row["recovered_interview_id"] for row in detector_candidates),
         "recordings": record_rows, "interview_rows": interview_rows,
     })
     return summary

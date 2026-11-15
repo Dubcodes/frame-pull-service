@@ -117,10 +117,13 @@ class OperationalV2Tests(unittest.TestCase):
         with self.sessions() as session:
             rec=session.get(Recording,rid);job=Job(recording_id=rid,status=JobStatus.COMPLETE);session.add(job);session.commit();result=deletion_eligibility(session,self.settings,rec);self.assertFalse(result["safe_to_delete"]);self.assertFalse(result["checks"]["deletion_enabled"])
 
-    def test_zero_interview_complete_job_is_vacuously_editorially_complete(self):
+    def test_zero_interview_job_still_requires_explicit_source_review(self):
         rid=self.record()
         with self.sessions() as session:
             session.add(Job(recording_id=rid,status=JobStatus.COMPLETE));self.healthy(session,rid);update_settings(session,{"source_deletion_enabled":True,"source_retention_hours":0})
+            result=deletion_eligibility(session,self.settings,session.get(Recording,rid))
+            self.assertFalse(result["safe_to_delete"]);self.assertFalse(result["checks"]["race_day_source_review_complete"])
+            session.get(RaceDay,session.get(Recording,rid).race_day_id).source_review_state="review_complete";session.commit()
             result=deletion_eligibility(session,self.settings,session.get(Recording,rid))
             self.assertTrue(result["safe_to_delete"]);self.assertTrue(result["checks"]["review_complete"]);self.assertTrue(result["checks"]["export_complete"]);self.assertTrue(result["checks"]["evidence_present"])
 
@@ -128,6 +131,7 @@ class OperationalV2Tests(unittest.TestCase):
         first=self.record();second=self.record("trackside_20260921-0850_022.ts")
         with self.sessions() as session:
             session.add_all([Job(recording_id=first,status=JobStatus.COMPLETE),Job(recording_id=second,status=JobStatus.COMPLETE)]);self.healthy(session,first,second);update_settings(session,{"source_deletion_enabled":True,"source_retention_hours":0})
+            session.query(RaceDay).one().source_review_state="review_complete";session.commit()
             result=sweep_source_lifecycle(session,self.settings,limit=1)
             self.assertEqual(result["inspected"],1);self.assertEqual(result["deleted"],1);self.assertEqual(session.query(SourceDeletionAudit).count(),1)
             status=source_lifecycle_status(session,self.settings)
@@ -137,6 +141,7 @@ class OperationalV2Tests(unittest.TestCase):
         first=self.record();second=self.record("trackside_20260921-0850_022.ts")
         with self.sessions() as session:
             session.add_all([Job(recording_id=first,status=JobStatus.COMPLETE),Job(recording_id=second,status=JobStatus.COMPLETE)]);self.healthy(session,first,second);update_settings(session,{"source_deletion_enabled":True,"source_retention_hours":0})
+            session.query(RaceDay).one().source_review_state="review_complete";session.commit()
             original_unlink=Path.unlink
             calls={"count":0}
             def fail_once(path, *args, **kwargs):
