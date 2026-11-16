@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from PIL import Image
 from sqlalchemy import select
@@ -19,6 +21,13 @@ from .paths import contained_path, resolve_recording_source
 
 TRIAGE_STATES = {"unreviewed", "not_interview", "recovered", "deferred"}
 PREVIEW_SLOTS = ("start", "midpoint", "end")
+_PREVIEW_LOCKS: dict[str, threading.Lock] = {}
+_PREVIEW_LOCKS_GUARD = threading.Lock()
+
+
+def _preview_lock(path: Path) -> threading.Lock:
+    with _PREVIEW_LOCKS_GUARD:
+        return _PREVIEW_LOCKS.setdefault(str(path), threading.Lock())
 
 
 def _cache_root(settings: Settings) -> Path:
@@ -62,9 +71,17 @@ def candidate_preview(
     minimum_free = float(get_value(session, "playback_cache_min_free_gb", 10)) * 1024 ** 3
     if shutil.disk_usage(settings.data_dir).free < minimum_free: raise ValueError("insufficient free space for derived preview")
     destination = _candidate_dir(settings, candidate) / f"{slot}_{int(preview_times(candidate)[slot] * 1000):010d}.jpg"
-    if not destination.is_file():
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        frame_extractor("ffmpeg", source, destination, preview_times(candidate)[slot])
+    with _preview_lock(destination):
+        if not destination.is_file() or destination.stat().st_size == 0:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(f"{destination.stem}.{uuid4().hex}.tmp.jpg")
+            try:
+                frame_extractor("ffmpeg", source, temporary, preview_times(candidate)[slot])
+                if not temporary.is_file() or temporary.stat().st_size == 0:
+                    raise ValueError("preview extraction produced no image")
+                temporary.replace(destination)
+            finally:
+                temporary.unlink(missing_ok=True)
     destination.touch()
     cleanup_candidate_preview_cache(session, settings, preserve=destination)
     return contained_path(_cache_root(settings), destination)

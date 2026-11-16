@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -58,6 +60,32 @@ class VisualTriageV2132Tests(unittest.TestCase):
         source_path.unlink()
         app=create_app(self.settings)
         with TestClient(app) as client: self.assertEqual(client.get(f"/api/detector-candidates/{self.key}/preview/start").status_code,404)
+
+    def test_failed_preview_is_atomic_and_retryable(self):
+        with self.sessions() as session:
+            def fail_after_partial(_ffmpeg,_source,destination,_time):
+                destination.parent.mkdir(parents=True,exist_ok=True);destination.write_bytes(b"partial")
+                raise RuntimeError("simulated extraction failure")
+            with self.assertRaises(RuntimeError):
+                candidate_preview(session,self.settings,self.key,"start",frame_extractor=fail_after_partial)
+            cache=Path(self.settings.data_dir)/"candidate_preview_cache"
+            self.assertEqual(list(cache.rglob("*.tmp.jpg")),[])
+            self.assertEqual(list(cache.rglob("start_*.jpg")),[])
+            path=candidate_preview(session,self.settings,self.key,"start",frame_extractor=self.fake_frame)
+            self.assertTrue(path.is_file());self.assertGreater(path.stat().st_size,0)
+
+    def test_concurrent_preview_requests_generate_once(self):
+        calls=0;guard=threading.Lock()
+        def counted_frame(*args):
+            nonlocal calls
+            with guard: calls+=1
+            self.fake_frame(*args)
+        def request():
+            with self.sessions() as session:
+                return candidate_preview(session,self.settings,self.key,"start",frame_extractor=counted_frame)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            paths=list(pool.map(lambda _index:request(),range(4)))
+        self.assertEqual(calls,1);self.assertEqual(len(set(paths)),1)
 
     def test_triage_state_audit_progress_filters_and_completion_safety(self):
         app=create_app(self.settings)

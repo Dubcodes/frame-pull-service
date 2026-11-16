@@ -370,7 +370,7 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
         with state.sessions() as session:
             try: path = candidate_preview(session, state.settings, candidate_key, slot)
             except FileNotFoundError as exc: raise HTTPException(404, str(exc))
-            except (ValueError, OSError) as exc: raise HTTPException(422, str(exc))
+            except (ValueError, OSError, subprocess.SubprocessError) as exc: raise HTTPException(422, str(exc))
             return FileResponse(path, media_type="image/jpeg", filename=path.name)
 
     @app.put("/api/detector-candidates/{candidate_key}/triage")
