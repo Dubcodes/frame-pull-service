@@ -13,6 +13,7 @@ from .media_audit import latest_media_audit, media_audit_view
 from .paths import resolve_recording_source
 from .playback import playback_proxy_view
 from .detector_candidates import detector_candidates_for_race_day, source_review_view
+from .source_review_queue import source_review_progress
 from .time_model import DEFAULT_BROADCAST_TIMEZONE, broadcast_zone, in_broadcast_timezone, iso_broadcast, recording_end
 
 
@@ -153,16 +154,18 @@ def race_day_archive(session: Session, settings, race_day: RaceDay) -> dict:
             })
     rejected = sum(row["review_status"] == "rejected" for row in interview_rows)
     exported = sum(row["export_state"] == "exported" for row in interview_rows)
+    pending_exports = sum(row["review_status"] == "approved" and row["export_state"] != "exported" for row in interview_rows)
     manual = sum(row["manual"] for row in interview_rows)
     detector_candidates = detector_candidates_for_race_day(session, settings, race_day.id)
     summary.update({
         "total_source_bytes": sum(row["size_bytes"] for row in record_rows if row["source_available"]),
         "total_source_duration_seconds": sum((row["duration_seconds"] or 0) for row in record_rows if row["source_available"]),
         "source_available_count": sum(row["source_available"] for row in record_rows),
-        "health": dict(health_counts), "rejected": rejected, "exported": exported,
+        "health": dict(health_counts), "rejected": rejected, "exported": exported, "pending_exports": pending_exports,
         "automated_interviews": len(interview_rows) - manual, "manually_recovered_interviews": manual,
         "detector_candidate_count": len(detector_candidates),
         "unresolved_detector_candidates": sum(not row["recovered_interview_id"] for row in detector_candidates),
+        "source_review_progress": source_review_progress(session, settings, race_day.id),
         "recordings": record_rows, "interview_rows": interview_rows,
     })
     return summary

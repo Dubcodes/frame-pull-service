@@ -451,3 +451,21 @@ candidate/portrait media without Windows paths. Set `FRAME_PULL_BRIDGE_TOKEN`
 outside source control to require `Authorization: Bearer <token>`. Use a LAN,
 Tailscale, or private reverse tunnel as transport; do not share databases or
 mount service storage between machines.
+
+## Visual detector-candidate triage
+
+Rejected temporal candidates on each RaceDay now have three cached JPEG
+previews (start, midpoint, and end) generated from the contained canonical
+recording path. The cache is derived data, LRU-bounded by
+`candidate_preview_cache_max_bytes`, and never participates in canonical media
+or Interview-evidence cleanup. Candidate classification is stored separately
+from immutable detector artifacts, with an append-only transition audit.
+
+The RaceDay view defaults to unreviewed candidates ordered by evidence quality
+and supports play, manual-recovery prefill, confirmed not-an-interview,
+defer, and bounded one-candidate OCR reinspection. Derived OCR is labelled as
+reinspection evidence and cannot create or authenticate an Interview. Use
+`/source-review` for the retention-prioritized queue and storage-risk summary;
+the detector-tuning dataset is available from `/api/detector-triage/report`.
+Completing source review with unresolved candidates requires a distinct strong
+confirmation and records the unresolved count.

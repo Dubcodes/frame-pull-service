@@ -20,6 +20,7 @@ ADDITIVE_SCHEMA_COLUMNS = {
         "source_review_state": "VARCHAR(32) NOT NULL DEFAULT 'not_reviewed'",
         "source_review_updated_at": "DATETIME",
         "source_review_note": "TEXT",
+        "source_review_unresolved_count": "INTEGER",
     },
     "recordings": {
         "race_day_id": "INTEGER", "recording_started_at": "DATETIME", "recording_stopped_at": "DATETIME",

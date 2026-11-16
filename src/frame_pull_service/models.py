@@ -48,6 +48,7 @@ class RaceDay(Base):
     source_review_state: Mapped[str] = mapped_column(String(32), default="not_reviewed", server_default="not_reviewed")
     source_review_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     source_review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_review_unresolved_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class OperationalSetting(Base):
@@ -235,6 +236,32 @@ class DetectorCandidateRecovery(Base):
     final_end: Mapped[float] = mapped_column(Float)
     miss_category: Mapped[str] = mapped_column(String(80), default="unknown")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DetectorCandidateTriage(Base):
+    __tablename__ = "detector_candidate_triage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    candidate_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    processing_run_id: Mapped[int] = mapped_column(ForeignKey("processing_runs.id"), index=True)
+    recording_id: Mapped[int] = mapped_column(ForeignKey("recordings.id"), index=True)
+    review_state: Mapped[str] = mapped_column(String(32), default="unreviewed", index=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    operator_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recovered_interview_id: Mapped[int | None] = mapped_column(ForeignKey("interviews.id"), nullable=True)
+    derived_reinspection: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class DetectorCandidateTriageEvent(Base):
+    __tablename__ = "detector_candidate_triage_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    candidate_key: Mapped[str] = mapped_column(String(120), index=True)
+    processing_run_id: Mapped[int] = mapped_column(ForeignKey("processing_runs.id"), index=True)
+    recording_id: Mapped[int] = mapped_column(ForeignKey("recordings.id"), index=True)
+    from_state: Mapped[str] = mapped_column(String(32))
+    to_state: Mapped[str] = mapped_column(String(32), index=True)
+    operator_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
 class Interview(Base):

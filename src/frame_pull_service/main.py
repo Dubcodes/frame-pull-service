@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import subprocess
 from urllib.parse import urlencode
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -33,6 +34,8 @@ from .services.source_lifecycle import delete_if_eligible, deletion_eligibility,
 from .services.media_audit import audit_recording, latest_media_audit, media_audit_view, next_integrity_candidate
 from .services.manual_recovery import create_manual_interview, validate_manual_interval
 from .services.detector_candidates import MISS_CATEGORIES, detector_candidates_for_race_day, get_detector_candidate, set_source_review_state
+from .services.candidate_triage import candidate_preview, cleanup_candidate_preview_cache, reinspect_candidate, set_candidate_triage
+from .services.source_review_queue import source_review_progress, source_review_queue
 from .services.playback import create_playback_proxy, playback_cache_status, playback_proxy_view
 from .services.calendar import LoveRacingCalendarProvider, refresh_race_day, sync_race_days
 from .services.context import refresh_race_day_contexts, resolve_interview_context
@@ -349,13 +352,57 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     @app.put("/api/race-days/{race_day_id}/source-review")
     def update_race_day_source_review(race_day_id: int, body: dict) -> dict:
         requested = str(body.get("state") or "")
-        if requested == "review_complete" and body.get("confirmation") != "source review is complete":
-            raise HTTPException(422, "explicit source-review completion confirmation is required")
         with state.sessions() as session:
             item = session.get(RaceDay, race_day_id)
             if not item: raise HTTPException(404, "race day not found")
-            try: return set_source_review_state(session, item, requested, note=body.get("note"))
+            progress = source_review_progress(session, state.settings, race_day_id)
+            unresolved = progress["remaining"]
+            if requested == "review_complete":
+                expected = "complete source review with unresolved candidates" if unresolved else "source review is complete"
+                if body.get("confirmation") != expected:
+                    raise HTTPException(422, f"explicit source-review completion confirmation is required; {unresolved} candidates remain")
+            try: return set_source_review_state(session, item, requested, note=body.get("note"),
+                                                unresolved_count=unresolved if requested == "review_complete" else None)
             except ValueError as exc: raise HTTPException(422, str(exc))
+
+    @app.get("/api/detector-candidates/{candidate_key}/preview/{slot}")
+    def detector_candidate_preview(candidate_key: str, slot: str):
+        with state.sessions() as session:
+            try: path = candidate_preview(session, state.settings, candidate_key, slot)
+            except FileNotFoundError as exc: raise HTTPException(404, str(exc))
+            except (ValueError, OSError) as exc: raise HTTPException(422, str(exc))
+            return FileResponse(path, media_type="image/jpeg", filename=path.name)
+
+    @app.put("/api/detector-candidates/{candidate_key}/triage")
+    def update_detector_candidate_triage(candidate_key: str, body: dict) -> dict:
+        requested = str(body.get("state") or "")
+        if requested == "not_interview" and body.get("confirmation") != "mark candidate not an interview":
+            raise HTTPException(422, "explicit not-an-interview confirmation is required")
+        with state.sessions() as session:
+            try: return set_candidate_triage(session, state.settings, candidate_key, requested, note=body.get("note"))
+            except ValueError as exc: raise HTTPException(422, str(exc))
+
+    @app.post("/api/detector-candidates/{candidate_key}/reinspect")
+    def reinspection(candidate_key: str) -> dict:
+        with state.sessions() as session:
+            try: return reinspect_candidate(session, state.settings, candidate_key)
+            except FileNotFoundError as exc: raise HTTPException(404, str(exc))
+            except (ValueError, OSError, subprocess.SubprocessError) as exc: raise HTTPException(422, str(exc))
+
+    @app.get("/api/operations/candidate-preview-cache")
+    def candidate_preview_cache() -> dict:
+        with state.sessions() as session: return cleanup_candidate_preview_cache(session, state.settings)
+
+    @app.get("/api/source-review/queue")
+    def source_review_queue_api() -> dict:
+        with state.sessions() as session: return source_review_queue(session, state.settings)
+
+    @app.get("/api/detector-triage/report")
+    def detector_triage_report(race_day_id: int | None = None) -> dict:
+        with state.sessions() as session:
+            day_ids = [race_day_id] if race_day_id else [row.id for row in session.execute(select(RaceDay)).scalars()]
+            rows = [row for day_id in day_ids for row in detector_candidates_for_race_day(session, state.settings, day_id)]
+            return {"count": len(rows), "candidates": rows}
 
     @app.put("/api/race-days/{race_day_id}/protect")
     def protect_race_day(race_day_id: int, body: dict) -> dict:
@@ -787,6 +834,8 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
             return templates.TemplateResponse(request, "dashboard.html", {"recordings": session.query(Recording).count(), "pending": session.query(Interview).filter(Interview.review_status==ReviewStatus.PENDING).count(), "approved": session.query(Interview).filter(Interview.review_status==ReviewStatus.APPROVED).count()})
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request): return templates.TemplateResponse(request, "settings.html", {})
+    @app.get("/source-review", response_class=HTMLResponse)
+    def source_review_page(request: Request): return templates.TemplateResponse(request, "source_review.html", {})
     @app.get("/race-days/{race_day_id}", response_class=HTMLResponse)
     def race_day_page(request: Request, race_day_id: int): return templates.TemplateResponse(request, "race_day.html", {"race_day_id": race_day_id})
     @app.get("/review", response_class=HTMLResponse)

@@ -8,7 +8,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..models import Candidate, DetectorCandidateRecovery, Interview, InterviewRevision, ProcessingRun, Recording, ReviewEvent
+from ..models import Candidate, DetectorCandidateRecovery, DetectorCandidateTriage, DetectorCandidateTriageEvent, Interview, InterviewRevision, ProcessingRun, Recording, ReviewEvent
 from .detector_candidates import MISS_CATEGORIES
 from .manifests import write_manifest
 from .media import create_clip, extract_frame
@@ -110,6 +110,19 @@ def create_manual_interview(
             final_start=start,
             final_end=end,
             miss_category=category,
+        ))
+        triage = session.query(DetectorCandidateTriage).filter_by(candidate_key=detector_candidate["candidate_key"]).one_or_none()
+        if triage is None:
+            triage = DetectorCandidateTriage(candidate_key=detector_candidate["candidate_key"],
+                processing_run_id=int(detector_candidate["processing_run_id"]), recording_id=recording.id)
+            session.add(triage)
+        prior_triage_state = triage.review_state or "unreviewed"
+        triage.review_state, triage.reviewed_at, triage.recovered_interview_id = "recovered", datetime.utcnow(), interview.id
+        session.add(DetectorCandidateTriageEvent(
+            candidate_key=detector_candidate["candidate_key"],
+            processing_run_id=int(detector_candidate["processing_run_id"]), recording_id=recording.id,
+            from_state=prior_triage_state, to_state="recovered",
+            operator_note="manual detector-candidate recovery",
         ))
         session.add(ReviewEvent(
             interview_id=interview.id,

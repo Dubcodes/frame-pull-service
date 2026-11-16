@@ -15,7 +15,7 @@ from frame_pull_service.config import Settings
 from frame_pull_service.db import create_db_engine, init_db, make_session_factory
 from frame_pull_service.main import create_app
 from frame_pull_service.models import (
-    Candidate, DetectorCandidateRecovery, Interview, InterviewRevision, Job, JobStatus, PlaybackProxy, ProcessingRun,
+    Candidate, DetectorCandidateRecovery, DetectorCandidateTriage, DetectorCandidateTriageEvent, Interview, InterviewRevision, Job, JobStatus, PlaybackProxy, ProcessingRun,
     RaceDay, Recording, RecordingMediaAudit, RecordingStatus, ReviewEvent, SourceDeletionAudit,
     SourceProtectionAudit,
 )
@@ -207,6 +207,8 @@ class ReliabilityV213Tests(unittest.TestCase):
             self.assertTrue(Path(revision.clip_path).is_file()); self.assertTrue(Path(revision.poster_path).is_file()); self.assertTrue(Path(revision.manifest_path).is_file())
             recovery = session.query(DetectorCandidateRecovery).filter_by(interview_id=interview.id).one()
             self.assertEqual(recovery.processing_run_id, original_id); self.assertEqual(recovery.final_start, 10)
+            self.assertEqual(session.query(DetectorCandidateTriage).filter_by(candidate_key=recovery.candidate_key).one().review_state,"recovered")
+            self.assertEqual(session.query(DetectorCandidateTriageEvent).filter_by(candidate_key=recovery.candidate_key).one().to_state,"recovered")
             manifest_recovery=json.loads(Path(revision.manifest_path).read_text())["recovery"]
             self.assertTrue(manifest_recovery["manual"]); self.assertEqual(manifest_recovery["detector_candidate"]["miss_category"],"temporal_grouping_issue")
             self.assertEqual(session.query(ReviewEvent).filter_by(interview_id=interview.id,event_type="detector_candidate_recovered").count(),1)

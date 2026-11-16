@@ -36,6 +36,7 @@ DEFAULTS = {
     "integrity_audit_min_recording_id": 0,
     "playback_cache_max_bytes": 20 * 1024 * 1024 * 1024,
     "playback_cache_min_free_gb": 10,
+    "candidate_preview_cache_max_bytes": 2 * 1024 * 1024 * 1024,
 }
 
 
@@ -77,6 +78,8 @@ def update_settings(session: Session, values: dict) -> dict:
         if key == "integrity_audit_min_recording_id":
             value = max(0, int(value))
         if key == "playback_cache_max_bytes":
+            value = max(1, int(value))
+        if key == "candidate_preview_cache_max_bytes":
             value = max(1, int(value))
         if key == "playback_cache_min_free_gb":
             value = max(0.0, float(value))

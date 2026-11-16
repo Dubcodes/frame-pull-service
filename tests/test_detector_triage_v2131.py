@@ -72,7 +72,7 @@ class DetectorTriageV2131Tests(unittest.TestCase):
             result=deletion_eligibility(session,self.settings,session.get(Recording,self.recording_id))
             self.assertFalse(result["safe_to_delete"]); self.assertFalse(result["checks"]["race_day_source_review_complete"])
         with TestClient(app) as client:
-            response=client.put(f"/api/race-days/{self.day_id}/source-review",json={"state":"review_complete","confirmation":"source review is complete"})
+            response=client.put(f"/api/race-days/{self.day_id}/source-review",json={"state":"review_complete","confirmation":"complete source review with unresolved candidates"})
             self.assertEqual(response.status_code,200)
         with self.sessions() as session:
             self.assertTrue(deletion_eligibility(session,self.settings,session.get(Recording,self.recording_id))["checks"]["race_day_source_review_complete"])
@@ -94,7 +94,7 @@ class DetectorTriageV2131Tests(unittest.TestCase):
             self.assertNotIn(str(self.root),response.text)
         web=Path(__file__).resolve().parents[1]/"src"/"frame_pull_service"/"web"
         js=(web/"static"/"race_day.js").read_text(); html=(web/"templates"/"race_day.html").read_text()
-        for text in ("candidate-search","candidate-chunk","candidate-reason","candidate-unresolved","detector_candidate_key","previewCandidate","prefillCandidate"):
+        for text in ("candidate-search","candidate-chunk","candidate-reason","candidate-state","detector_candidate_key","previewCandidate","prefillCandidate"):
             self.assertIn(text,js+html)
         self.assertIn("source review is complete",js); self.assertIn("Possible missed interviews",html)
 

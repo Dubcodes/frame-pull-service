@@ -55,7 +55,7 @@ class Settings(BaseSettings):
         return f"sqlite:///{(self.data_dir / 'frame_pull.db').as_posix()}"
 
     def ensure_data_dirs(self) -> None:
-        for path in (self.data_dir, self.data_dir / "jobs", self.data_dir / "interviews", self.data_dir / "logs", self.data_dir / "backups", self.data_dir / "playback_cache"):
+        for path in (self.data_dir, self.data_dir / "jobs", self.data_dir / "interviews", self.data_dir / "logs", self.data_dir / "backups", self.data_dir / "playback_cache", self.data_dir / "candidate_preview_cache"):
             path.mkdir(parents=True, exist_ok=True)
 
     @property

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..models import DetectorCandidateRecovery, Interview, ProcessingRun, RaceDay, Recording
+from ..models import DetectorCandidateRecovery, DetectorCandidateTriage, Interview, ProcessingRun, RaceDay, Recording
 from .paths import resolve_data_artifact
 from .time_model import iso_broadcast
 
@@ -77,6 +77,11 @@ def detector_candidates_for_recording(
             select(DetectorCandidateRecovery).where(DetectorCandidateRecovery.recording_id == recording.id)
         ).scalars()
     }
+    triage_rows = {
+        row.candidate_key: row for row in session.execute(
+            select(DetectorCandidateTriage).where(DetectorCandidateTriage.recording_id == recording.id)
+        ).scalars()
+    }
     rows: list[dict] = []
     for index, item in enumerate(_temporal_audit(settings, run)):
         if not isinstance(item, dict) or bool(item.get("authenticated")):
@@ -92,6 +97,7 @@ def detector_candidates_for_recording(
         required_stable = max(1, int(item.get("required_stable_pairs") or 1))
         key = f"run-{run.id}-temporal-{index}"
         recovery = recoveries.get(key)
+        triage = triage_rows.get(key)
         rows.append({
             "candidate_key": key,
             "processing_run_id": run.id,
@@ -128,6 +134,14 @@ def detector_candidates_for_recording(
             ),
             "recovered_interview_id": recovery.interview_id if recovery else None,
             "miss_category": recovery.miss_category if recovery else None,
+            "triage_state": "recovered" if recovery else (triage.review_state if triage else "unreviewed"),
+            "triage_reviewed_at": triage.reviewed_at if triage else None,
+            "triage_note": triage.operator_note if triage else None,
+            "derived_reinspection": triage.derived_reinspection if triage else None,
+            "previews": [
+                {"slot": slot, "url": f"/api/detector-candidates/{key}/preview/{slot}"}
+                for slot in ("start", "midpoint", "end")
+            ],
         })
     return rows
 
@@ -165,12 +179,14 @@ def get_detector_candidate(
     return candidate
 
 
-def set_source_review_state(session: Session, race_day: RaceDay, state: str, *, note: str | None = None) -> dict:
+def set_source_review_state(session: Session, race_day: RaceDay, state: str, *, note: str | None = None,
+                            unresolved_count: int | None = None) -> dict:
     if state not in SOURCE_REVIEW_STATES:
         raise ValueError("source review state must be not_reviewed, in_progress, or review_complete")
     race_day.source_review_state = state
     race_day.source_review_updated_at = datetime.utcnow()
     race_day.source_review_note = (note or "").strip()[:2000] or None
+    race_day.source_review_unresolved_count = unresolved_count if state == "review_complete" else None
     session.commit()
     return source_review_view(race_day)
 
@@ -180,4 +196,5 @@ def source_review_view(race_day: RaceDay) -> dict:
         "state": race_day.source_review_state or "not_reviewed",
         "updated_at": race_day.source_review_updated_at,
         "note": race_day.source_review_note,
+        "unresolved_count_at_completion": race_day.source_review_unresolved_count,
     }
