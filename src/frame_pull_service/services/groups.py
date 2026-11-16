@@ -28,10 +28,26 @@ def sync_groups(session: Session) -> None:
         recording = session.get(Recording, interview.recording_id)
         if not name or not recording.race_day_id:
             continue
-        key = identity_key(name)
+        code = interview.racing_code if interview.racing_code in {"thoroughbred","harness","greyhound"} else "unknown"
+        key = f"{identity_key(name)}|{code}"
         group = session.execute(select(AppearanceGroup).where(AppearanceGroup.race_day_id == recording.race_day_id, AppearanceGroup.identity_key == key)).scalar_one_or_none()
+        current = session.get(AppearanceGroup, interview.appearance_group_id) if interview.appearance_group_id else None
+        # Upgrade a compatible legacy group in place so its preferred portrait and
+        # export state survive the v2.14 key change. Never fold unknown into a
+        # known-code group or combine two different known racing codes.
+        if group is None and current is not None and identity_key(current.display_name) == identity_key(name):
+            current_code = current.racing_code if current.racing_code in {"thoroughbred", "harness", "greyhound"} else "unknown"
+            members = session.execute(select(Interview).where(Interview.appearance_group_id == current.id)).scalars().all()
+            compatible_upgrade = current_code == "unknown" and code != "unknown" and all(
+                member.id == interview.id or member.racing_code == code for member in members
+            )
+            if current_code == code or compatible_upgrade:
+                current.identity_key = key
+                current.racing_code = code
+                current.display_name = name
+                group = current
         if group is None:
-            group = AppearanceGroup(race_day_id=recording.race_day_id, identity_key=key, display_name=name)
+            group = AppearanceGroup(race_day_id=recording.race_day_id, identity_key=key, display_name=name, racing_code=code)
             session.add(group); session.flush()
         interview.appearance_group_id = group.id
         if interview.final_track and not group.final_track:
@@ -75,7 +91,7 @@ def group_view(session: Session, group: AppearanceGroup) -> dict:
     else:
         location, location_state = None, "unknown"
     export_state = "exported" if approved and all(item.export_state == "exported" for item in approved) else "pending"
-    return {"id": group.id, "race_day_id": group.race_day_id, "name": group.display_name, "interview_ids": [item.id for item in members],
+    return {"id": group.id, "race_day_id": group.race_day_id, "name": group.display_name, "racing_code":group.racing_code, "interview_ids": [item.id for item in members],
             "interview_count": len(members), "candidate_count": len(candidates), "track": location,
             "location_state": location_state, "location_confidence": group.location_confidence, "preferred_candidate_id": preferred.id if preferred else None,
             "portrait_url": f"/api/bridge/v1/groups/{group.id}/portrait" if bridge_candidate else None,
@@ -83,7 +99,7 @@ def group_view(session: Session, group: AppearanceGroup) -> dict:
             "holding_url": f"/api/interviews/{preferred_owner.id}/candidates/{preferred.id}" if preferred and preferred_owner else (f"/api/interviews/{fallback_interview.id}/poster" if fallback_interview else None),
             "review_status": "approved" if approved else "pending", "export_state": export_state,
             "roles": roles, "interviews": [{"id": item.id, "role": item.final_role, "track": item.final_track,
-            "source_start": item.source_start, "source_end": item.source_end, "review_status": item.review_status.value,
+            "source_start": item.source_start, "source_end": item.source_end, "review_status": item.review_status.value,"racing_code":item.racing_code,
             "poster_url": f"/api/interviews/{item.id}/poster" if item.active_revision_id else None,
             "clip_duration": round(session.get(InterviewRevision, item.active_revision_id).clip_end - session.get(InterviewRevision, item.active_revision_id).clip_start, 3) if item.active_revision_id else 0,
             "candidate_count": len(session.get(InterviewRevision, item.active_revision_id).candidates) if item.active_revision_id else 0,

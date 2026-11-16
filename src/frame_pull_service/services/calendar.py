@@ -49,6 +49,7 @@ class CalendarMeetingPayload:
     race_date: date | None = None
     races: list[CalendarRacePayload] = field(default_factory=list)
     source: str = "loveracing"
+    racing_code: str = "thoroughbred"
     retrieved_at: datetime = field(default_factory=datetime.utcnow)
 
 
@@ -234,6 +235,8 @@ def upsert_meeting_context(session: Session, race_day_id: int, payload: Calendar
     if meeting is None:
         meeting = CalendarMeeting(race_day_id=race_day_id, track=track); session.add(meeting); session.flush()
     meeting.source, meeting.source_url, meeting.source_timestamp = payload.source, payload.source_url, payload.retrieved_at
+    if payload.racing_code in {"thoroughbred", "harness", "greyhound"}:
+        meeting.racing_code, meeting.racing_code_source = payload.racing_code, payload.source
     meeting.refreshed_at, meeting.last_attempted_at, meeting.provider_status, meeting.last_error = datetime.utcnow(), datetime.utcnow(), "ok", None
     for row in payload.races:
         item = session.execute(select(CalendarRace).where(CalendarRace.meeting_id == meeting.id, CalendarRace.race_number == row.race_number)).scalar_one_or_none()

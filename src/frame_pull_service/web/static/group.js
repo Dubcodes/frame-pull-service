@@ -16,6 +16,7 @@ function renderSummary(){
     <div><dt>Portrait candidates</dt><dd>${group.candidate_count}</dd></div>
     <div><dt>Location</dt><dd>${group.location_state==='conflict'?'Conflicting locations':text(group.track)}</dd></div>
     <div><dt>Roles</dt><dd>${group.roles.length?group.roles.join(', '):'Not supplied'}</dd></div>
+    <div><dt>Racing code</dt><dd><span class="code-badge">${group.racing_code||'unknown'}</span></dd></div>
     <div><dt>Review</dt><dd>${group.review_status}</dd></div>
     <div><dt>Export</dt><dd>${group.export_state}</dd></div>`;
   updatePortrait(group.holding_url);
@@ -34,7 +35,7 @@ function renderInterviews(){
       <div class="interview-copy"><h3>Interview ${item.id}</h3><div class="interview-meta">
         <span>${localTime(context.interview_time)}</span>
         <span>${text(context.resolved_track||item.track)} · ${context.race_number?`Race ${context.race_number}`:'Race unresolved'}</span>
-        <span>${text(item.role)} · ${item.review_status}</span>
+        <span>${text(item.role)} · <span class="code-badge">${item.racing_code||'unknown'}</span> · ${item.review_status}</span>
         <span>${item.candidate_count} candidates · ${Number(item.clip_duration||0).toFixed(1)}s clip</span>
       </div></div></a>`;
   }).join('');

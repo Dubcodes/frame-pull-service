@@ -94,6 +94,8 @@ class CalendarMeeting(Base):
     provider_status: Mapped[str] = mapped_column(String(32), default="unknown")
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    racing_code: Mapped[str] = mapped_column(String(32), default="unknown", index=True)
+    racing_code_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class CalendarRace(Base):
@@ -116,6 +118,7 @@ class AppearanceGroup(Base):
     final_track: Mapped[str | None] = mapped_column(String(255), nullable=True)
     location_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     export_state: Mapped[str] = mapped_column(String(32), default="pending")
+    racing_code: Mapped[str] = mapped_column(String(32), default="unknown", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     __table_args__ = (UniqueConstraint("race_day_id", "identity_key"),)
 
@@ -284,6 +287,33 @@ class Interview(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     appearance_group_id: Mapped[int | None] = mapped_column(ForeignKey("appearance_groups.id"), nullable=True, index=True)
     context_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    racing_code: Mapped[str] = mapped_column(String(32), default="unknown", index=True)
+    racing_code_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    racing_code_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class InterviewMetadataAnalysis(Base):
+    __tablename__ = "interview_metadata_analyses"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    interview_id: Mapped[int] = mapped_column(ForeignKey("interviews.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    analysis_version: Mapped[str] = mapped_column(String(32), default="v2.14")
+    analysis_basis: Mapped[str] = mapped_column(String(32))
+    source_timestamps: Mapped[list] = mapped_column(JSON, default=list)
+    name_observations: Mapped[list] = mapped_column(JSON, default=list)
+    name_consensus: Mapped[dict] = mapped_column(JSON, default=dict)
+    proposed_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    trusted_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    name_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    role_observations: Mapped[list] = mapped_column(JSON, default=list)
+    proposed_role: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    track_observations: Mapped[list] = mapped_column(JSON, default=list)
+    proposed_track: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    track_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    racing_code: Mapped[str] = mapped_column(String(32), default="unknown")
+    racing_code_evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    technical_warnings: Mapped[list] = mapped_column(JSON, default=list)
+    applied_fields: Mapped[list] = mapped_column(JSON, default=list)
 
 
 class InterviewContext(Base):

@@ -44,8 +44,8 @@ def remove_playback_proxy(session: Session, settings: Settings, recording_id: in
     return row.size_bytes
 
 
-def cleanup_playback_cache(session: Session, settings: Settings, *, preserve_recording_id: int | None = None) -> dict:
-    maximum = int(get_value(session, "playback_cache_max_bytes", settings.playback_cache_max_bytes))
+def cleanup_playback_cache(session: Session, settings: Settings, *, preserve_recording_id: int | None = None, force: bool = False) -> dict:
+    maximum = 0 if force else int(get_value(session, "playback_cache_max_bytes", settings.playback_cache_max_bytes))
     rows = session.execute(select(PlaybackProxy).order_by(PlaybackProxy.last_accessed_at.asc())).scalars().all()
     total = sum(row.size_bytes for row in rows)
     deleted = 0
@@ -72,7 +72,8 @@ def create_playback_proxy(session: Session, settings: Settings, recording: Recor
             return existing
         except FileNotFoundError:
             session.delete(existing); session.flush()
-    minimum_free = float(get_value(session, "playback_cache_min_free_gb", settings.playback_cache_min_free_gb)) * 1024 ** 3
+    minimum_free = max(float(get_value(session, "playback_cache_min_free_gb", settings.playback_cache_min_free_gb)),
+                       float(get_value(session, "storage_critical_free_gb", 40))) * 1024 ** 3
     maximum = int(get_value(session, "playback_cache_max_bytes", settings.playback_cache_max_bytes))
     if recording.size_bytes > maximum:
         raise ValueError("recording is larger than the configured playback cache limit")

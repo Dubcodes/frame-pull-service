@@ -98,7 +98,9 @@ def race_day_summary(session: Session, race_day: RaceDay) -> dict:
                 "finished_at": iso_broadcast(job.finished_at)}
 
     return {"id": race_day.id, "date": race_day.race_date.isoformat(), "label": race_day.label or race_day.race_date.isoformat(),
-            "meetings": meetings, "calendar_status": calendar_status, "race_count": len(races),
+            "meetings": meetings, "meeting_details": [{"track": row.track, "racing_code": row.racing_code,
+                "racing_code_source": row.racing_code_source} for row in meeting_rows],
+            "calendar_status": calendar_status, "race_count": len(races),
             "first_race": iso_broadcast(min(race_times)) if race_times else None, "last_race": iso_broadcast(max(race_times)) if race_times else None,
             "last_calendar_refresh": iso_broadcast(max((row.refreshed_at for row in meeting_rows), default=None)),
             "files": len(records), "interviews": interviews, "pending": pending, "approved": approved,
@@ -148,6 +150,7 @@ def race_day_archive(session: Session, settings, race_day: RaceDay) -> dict:
                 "name": interview.final_name or (revision.trusted_name if revision else None) or (revision.ocr_name_candidate if revision else None),
                 "role": interview.final_role or (revision.role_clean if revision else None),
                 "track": interview.final_track or (revision.track_value if revision else None),
+                "racing_code": interview.racing_code,
                 "review_status": interview.review_status.value, "export_state": interview.export_state,
                 "has_portrait": bool(interview.selected_candidate_id), "manual": interview.bounds_basis == "manual_operator",
                 "url": f"/review/{interview.id}",

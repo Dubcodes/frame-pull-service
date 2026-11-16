@@ -37,6 +37,10 @@ DEFAULTS = {
     "playback_cache_max_bytes": 20 * 1024 * 1024 * 1024,
     "playback_cache_min_free_gb": 10,
     "candidate_preview_cache_max_bytes": 2 * 1024 * 1024 * 1024,
+    "storage_warning_free_gb": 80,
+    "storage_critical_free_gb": 40,
+    "max_managed_storage_gb": 350,
+    "metadata_reanalysis_enabled": True,
 }
 
 
@@ -82,6 +86,8 @@ def update_settings(session: Session, values: dict) -> dict:
         if key == "candidate_preview_cache_max_bytes":
             value = max(1, int(value))
         if key == "playback_cache_min_free_gb":
+            value = max(0.0, float(value))
+        if key in {"storage_warning_free_gb", "storage_critical_free_gb", "max_managed_storage_gb"}:
             value = max(0.0, float(value))
         if key == "default_review_view" and value not in {"people", "interviews"}:
             raise ValueError("default review view must be people or interviews")

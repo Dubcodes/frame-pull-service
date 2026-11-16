@@ -790,3 +790,42 @@
 - Historical-drive ingest must follow the documented inventory, duplicate
   detection, verified copy, discovery, and service-queue procedure. Archive
   originals remain out of scope for production source deletion.
+
+## Future Portainer migration checklist (not part of V2.14)
+
+The current production deployment remains the Compose project in
+`/srv/storage/projects/frame-pull-service`, using its ignored `.env` file and
+`compose.yaml`. It publishes host port 8094, uses restart policy
+`unless-stopped`, stores SQLite at `/srv/storage/frame-pull/data/frame_pull.db`,
+mounts `/srv/storage/frame-pull/data` as `/data`, mounts
+`/srv/storage/frame-pull/recordings` as `/recordings` (read-only in the worker),
+and mounts `/srv/storage/frame-pull/legacy` as `/legacy:ro`.
+
+Before a future Portainer conversion: stop the existing Compose project with
+the recorder closed and processing paused; take and verify a consistent SQLite
+backup; preserve the exact host bind paths, project identity, image tag, port,
+timezone, commands, health check, stop grace period, restart policy, and
+read-only worker mounts; enter secrets through Portainer rather than stack
+source; start web only and verify health, database counts, review media, and
+Bridge authentication; then start the worker while processing remains paused
+and prove it claims nothing. Do not enable recording, release work, or remove
+the old deployment until that state comparison passes.
+
+## People Intelligence racing-code compatibility boundary
+
+V2.14 keeps People Intelligence read-only and treats the authenticated Bridge
+as the integration boundary. Its eventual additive migration should add an
+indexed `racing_code` field with `thoroughbred`, `harness`, `greyhound`, and
+`unknown` values to `RaceMeeting`, `Race`, and `FramePullImport`; import payloads
+should copy the Bridge value without inference and retain its source/confidence
+where the import audit model permits. Meeting/race lookup and import
+idempotency keys must include racing code whenever it is known, so equal
+date/track/person text cannot join Harness and Thoroughbred context. `Person`
+must remain code-neutral because a real person can participate in more than one
+code. Existing rows migrate to `unknown`; no historical classification should
+be manufactured from a person's name, role, or track name.
+
+The expected People checkout could not be audited from this workstation during
+V2.14: the SMB server rejected guest access under Windows policy and SSH access
+to that host was denied. Therefore no People files or deployment state were
+changed, and implementation must wait for a clean authenticated checkout audit.

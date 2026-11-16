@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..models import RecordingSession
+from ..models import Recording, RecordingSession
 from .operations import get_value
 from .time_model import broadcast_zone
 
@@ -140,6 +140,20 @@ class FFmpegRecorder(RecorderAdapter):
         minimum = float(get_value(session, "recorder_min_free_space_gb", self.settings.recorder_min_free_space_gb))
         if free < minimum:
             return False, f"Free disk space is below the {minimum:g} GB recorder threshold."
+        return True, ""
+
+    def _automatic_storage_safe(self, session: Session) -> tuple[bool, str]:
+        free = self._free_space_gb()
+        if free is None:
+            return False, "Recorder output filesystem is unavailable."
+        critical = float(get_value(session, "storage_critical_free_gb", 40))
+        recent = session.execute(
+            select(Recording).where(Recording.size_bytes > 0).order_by(Recording.id.desc()).limit(5)
+        ).scalars().all()
+        estimated_gb = (sum(item.size_bytes for item in recent) / len(recent) / 1024 ** 3) if recent else 2.0
+        required = critical + max(estimated_gb, 0.5)
+        if free < required:
+            return False, f"Automatic recording blocked: {free:g} GB free is below the {required:.1f} GB critical reserve plus estimated next chunk."
         return True, ""
 
     def _chunk_pattern(self) -> Path:
@@ -283,6 +297,10 @@ class FFmpegRecorder(RecorderAdapter):
         allowed, reason = self._configured(session)
         if not allowed:
             raise RuntimeError(reason)
+        if not manual:
+            allowed, reason = self._automatic_storage_safe(session)
+            if not allowed:
+                raise RuntimeError(reason)
         output = self.settings.resolved_recorder_output_dir
         output.mkdir(parents=True, exist_ok=True)
         chunk_minutes = float(get_value(session, "recorder_chunk_minutes", self.settings.recorder_chunk_minutes))

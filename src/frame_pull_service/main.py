@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 from . import __version__
 from .config import Settings, get_settings
 from .db import create_db_engine, init_db, make_session_factory
-from .models import AppearanceGroup, CalendarMeeting, Candidate, DetectorCandidateRecovery, Interview, InterviewRevision, Job, JobStatus, PlaybackProxy, RaceDay, Recording, RecordingMediaAudit, RecordingSession, ReviewEvent, ReviewStatus
+from .models import AppearanceGroup, CalendarMeeting, Candidate, DetectorCandidateRecovery, Interview, InterviewMetadataAnalysis, InterviewRevision, Job, JobStatus, PlaybackProxy, RaceDay, Recording, RecordingMediaAudit, RecordingSession, ReviewEvent, ReviewStatus
 from .schemas import CaptureFrameRequest, RejectRequest, ReviewPatch, SelectCandidateRequest
 from .services.discovery import discover_recordings
 from .services.cleanup import cleanup_plan
@@ -41,6 +41,8 @@ from .services.calendar import LoveRacingCalendarProvider, refresh_race_day, syn
 from .services.context import refresh_race_day_contexts, resolve_interview_context
 from .services.orchestrator import RaceDayOrchestrator, planned_day_recording_window, planned_recording_window
 from .services.recorder import FFmpegRecorder
+from .services.interview_metadata import analysis_view, analyze_interview, bulk_candidates, latest_analysis, normalize_code
+from .services.storage import optional_work_allowed, relieve_storage_pressure, storage_metrics
 
 
 LOG = logging.getLogger(__name__)
@@ -87,11 +89,13 @@ def serialize_interview(session, interview: Interview, timezone: str = "Pacific/
             "export_state": interview.export_state, "final_name": interview.final_name, "final_role": interview.final_role,
             "final_track": interview.final_track, "identity_source": interview.identity_source,
             "appearance_group_id": interview.appearance_group_id,
+            "racing_code":interview.racing_code,"racing_code_source":interview.racing_code_source,
             "trusted_name": revision.trusted_name if revision else None, "ocr_name_candidate": revision.ocr_name_candidate if revision else None,
             "ocr_confidence": revision.ocr_confidence if revision else None, "name_trust_reason": revision.name_trust_reason if revision else None,
             "clip_duration": round(revision.clip_end - revision.clip_start, 3) if revision else 0,
             "has_portrait": candidate is not None, "poster_url": f"/api/interviews/{interview.id}/poster" if revision else None,
-            "calendar_context": resolve_interview_context(session, interview, timezone)}
+            "calendar_context": resolve_interview_context(session, interview, timezone),
+            "metadata_analysis":analysis_view(latest_analysis(session,interview.id))}
 
 
 def create_app(settings: Settings | None = None, worker_enabled: bool = False) -> FastAPI:
@@ -152,7 +156,8 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
                             )).first())
                             detector_busy = bool(session.execute(select(Job.id).where(Job.status == JobStatus.PROCESSING)).first())
                             minimum_id = int(get_value(session, "integrity_audit_min_recording_id", 0))
-                            candidate = None if not enabled or recorder_busy or detector_busy else next_integrity_candidate(session, min_recording_id=minimum_id)
+                            storage_allowed,_ = optional_work_allowed(session,state.settings)
+                            candidate = None if not enabled or recorder_busy or detector_busy or not storage_allowed else next_integrity_candidate(session, min_recording_id=minimum_id)
                             if candidate is not None:
                                 state.integrity_recording_id = candidate.id
                                 state.integrity_task = asyncio.create_task(asyncio.to_thread(run_integrity, candidate.id))
@@ -160,14 +165,19 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
                     LOG.exception("integrity audit scheduling failed")
                 try:
                     with state.sessions() as session:
-                        result = sweep_source_lifecycle(
-                            session,
-                            state.settings,
-                            limit=state.settings.source_lifecycle_sweep_limit,
-                            after_recording_id=state.source_lifecycle_cursor,
-                        )
-                        state.source_lifecycle_cursor = result["next_after_recording_id"]
-                        state.source_lifecycle_last_result = result
+                        pressure = storage_metrics(session,state.settings)
+                        if pressure["managed_cap_exceeded"]:
+                            cleanup = relieve_storage_pressure(session,state.settings,scheduled=True)
+                            state.source_lifecycle_last_result = cleanup.get("source_lifecycle")
+                        else:
+                            result = sweep_source_lifecycle(
+                                session,
+                                state.settings,
+                                limit=state.settings.source_lifecycle_sweep_limit,
+                                after_recording_id=state.source_lifecycle_cursor,
+                            )
+                            state.source_lifecycle_cursor = result["next_after_recording_id"]
+                            state.source_lifecycle_last_result = result
                 except Exception:
                     # Lifecycle work is independently best-effort; a failed sweep
                     # cannot stop discovery, review, queueing, or the next sweep.
@@ -548,6 +558,15 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     def playback_cache() -> dict:
         with state.sessions() as session: return playback_cache_status(session, state.settings)
 
+    @app.get("/api/operations/storage")
+    def storage_status(refresh: bool = False) -> dict:
+        with state.sessions() as session: return storage_metrics(session,state.settings,refresh=refresh)
+
+    @app.post("/api/operations/storage/evict-caches")
+    def storage_evict(body: dict) -> dict:
+        if body.get("confirmation") != "evict regenerable caches": raise HTTPException(422,"explicit cache-eviction confirmation is required")
+        with state.sessions() as session:return relieve_storage_pressure(session,state.settings)
+
     @app.post("/api/recordings/{recording_id}/manual-interviews/validate")
     def validate_missed_interview(recording_id: int, body: dict) -> dict:
         with state.sessions() as session:
@@ -657,6 +676,42 @@ def create_app(settings: Settings | None = None, worker_enabled: bool = False) -
     @app.get("/api/interviews/{interview_id}")
     def interview(interview_id: int) -> dict:
         with state.sessions() as session: return serialize_interview(session, get_interview(session, interview_id), state.settings.broadcast_timezone)
+
+    @app.post("/api/interviews/{interview_id}/metadata-reanalysis")
+    def metadata_reanalysis(interview_id: int) -> dict:
+        with state.sessions() as session:
+            if not get_value(session,"metadata_reanalysis_enabled",True):
+                raise HTTPException(409,"metadata re-analysis is disabled")
+            if state.recorder.refresh(session).running or session.query(Job).filter(Job.status==JobStatus.PROCESSING).count():
+                raise HTTPException(409,"metadata re-analysis waits for idle recorder and detector")
+            allowed,reason=optional_work_allowed(session,state.settings)
+            if not allowed:raise HTTPException(409,reason)
+            try:return analyze_interview(session,state.settings,get_interview(session,interview_id))
+            except (ValueError,FileNotFoundError,OSError,subprocess.SubprocessError) as exc:raise HTTPException(422,str(exc))
+
+    @app.post("/api/interviews/metadata-reanalysis/bulk")
+    def bulk_metadata_reanalysis(body: dict) -> dict:
+        if body.get("confirmation") != "reanalyze unresolved metadata":raise HTTPException(422,"explicit bulk confirmation is required")
+        with state.sessions() as session:
+            if not get_value(session,"metadata_reanalysis_enabled",True):
+                raise HTTPException(409,"metadata re-analysis is disabled")
+            if state.recorder.refresh(session).running or session.query(Job).filter(Job.status==JobStatus.PROCESSING).count():
+                raise HTTPException(409,"bulk metadata re-analysis waits for idle recorder and detector")
+            allowed,reason=optional_work_allowed(session,state.settings)
+            if not allowed:raise HTTPException(409,reason)
+            rows=bulk_candidates(session,int(body.get("limit",10)));results=[]
+            for item in rows:
+                try:results.append(analyze_interview(session,state.settings,item))
+                except (ValueError,FileNotFoundError,OSError,subprocess.SubprocessError) as exc:results.append({"interview_id":item.id,"error":str(exc)})
+            return {"inspected":len(rows),"results":results}
+
+    @app.put("/api/interviews/{interview_id}/racing-code")
+    def set_racing_code(interview_id: int,body: dict) -> dict:
+        with state.sessions() as session:
+            item=get_interview(session,interview_id);old=item.racing_code;item.racing_code=normalize_code(str(body.get("racing_code") or ""))
+            item.racing_code_source="manual_operator";item.racing_code_confidence=1.0
+            session.add(ReviewEvent(interview_id=item.id,event_type="racing_code_changed",payload={"from":old,"to":item.racing_code}))
+            session.commit();sync_groups(session);return serialize_interview(session,item)
 
     @app.get("/api/interviews/{interview_id}/manifest")
     def manifest(interview_id: int) -> dict:

@@ -44,9 +44,9 @@ def preview_times(candidate: dict) -> dict[str, float]:
     return {"start": start, "midpoint": (start + end) / 2.0, "end": max(end, start + 0.5)}
 
 
-def cleanup_candidate_preview_cache(session: Session, settings: Settings, *, preserve: Path | None = None) -> dict:
+def cleanup_candidate_preview_cache(session: Session, settings: Settings, *, preserve: Path | None = None, force: bool = False) -> dict:
     root = _cache_root(settings); root.mkdir(parents=True, exist_ok=True)
-    maximum = int(get_value(session, "candidate_preview_cache_max_bytes", 2 * 1024 ** 3))
+    maximum = 0 if force else int(get_value(session, "candidate_preview_cache_max_bytes", 2 * 1024 ** 3))
     files = sorted((p for p in root.rglob("*.jpg") if p.is_file()), key=lambda p: p.stat().st_mtime)
     total, deleted = sum(p.stat().st_size for p in files), 0
     for path in files:
@@ -68,7 +68,8 @@ def candidate_preview(
     recording = session.get(Recording, candidate["recording_id"])
     if recording is None: raise ValueError("detector candidate recording is unavailable")
     source = resolve_recording_source(settings, recording, verify_size=True)
-    minimum_free = float(get_value(session, "playback_cache_min_free_gb", 10)) * 1024 ** 3
+    minimum_free = max(float(get_value(session, "playback_cache_min_free_gb", 10)),
+                       float(get_value(session, "storage_critical_free_gb", 40))) * 1024 ** 3
     if shutil.disk_usage(settings.data_dir).free < minimum_free: raise ValueError("insufficient free space for derived preview")
     destination = _candidate_dir(settings, candidate) / f"{slot}_{int(preview_times(candidate)[slot] * 1000):010d}.jpg"
     with _preview_lock(destination):
